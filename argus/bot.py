@@ -1,7 +1,7 @@
 """Argus's voice and ears: a Telegram bot.
 
 Who can talk to it:
-  owner   : OWNER_CHAT_ID. Full Argus: tools, db, research, videos, admin commands.
+  owner   : OWNER_CHAT_ID. Full Argus: tools, db, research, admin commands.
   guests  : approved by the owner. Chat only, in a sandbox (web search/fetch, no db, files, shell or MCP), rate-limited.
   everyone else : ignored, except the secret codeword, which creates an access request for the owner to approve.
 
@@ -27,8 +27,7 @@ from .lib import (OWNER, ROOT, TG_TOKEN, ClaudeError, Progress, access_load, acc
 
 SESSION_IDLE_H = 6           # start a fresh chat session after this much quiet...
 SESSION_MAX_TURNS = 30       # ...or after this many turns, so context stays small and current
-CHAT_DISALLOW = ["mcp__ccstudio__render_video", "mcp__ccstudio__export_video"]   # videos need a confirm tap
-PROPOSAL = re.compile(r"\[\[PROPOSE_(VIDEO|RESEARCH):\s*(.+?)\]\]", re.S)
+PROPOSAL = re.compile(r"\[\[PROPOSE_(RESEARCH):\s*(.+?)\]\]", re.S)
 REVOKE_PROPOSAL = re.compile(r"\[\[PROPOSE_REVOKE:\s*(-?\d+)\s*\|?\s*(.*?)\]\]", re.S)
 FLAG = re.compile(r"\[\[FLAG_ABUSE:\s*(.+?)\]\]", re.S)
 WATCH_SPEC = re.compile(r"<<<WATCH_SPEC\s*(\{.*?\})\s*WATCH_SPEC>>>", re.S)
@@ -45,14 +44,12 @@ HELP = """👁 <b>Argus</b>: I watch AI and finance news so you don't have to.
 
 Just talk to me, or:
 /research &lt;topic&gt;: deep dive with papers and sources, plus a full report file
-/video &lt;topic&gt;: make a Reel/Short with CC Studio
 /scan: triage new items now · /brief: today's brief now
 /status: what I've been doing · /new: fresh conversation
-/daily [ai|finance]: draft today's daily video(s) now (you approve before render)
 /watches: what I keep an eye on (pause, digest now, remove)
 /guests: who has access, pending requests · /codeword &lt;word&gt;: set the access codeword
 
-On alerts: 👍/👎 teach me your taste, 🔎 digs deeper, 🎬 makes a video."""
+On alerts: 👍/👎 teach me your taste, 🔎 digs deeper."""
 
 GUEST_HELP = """👁 Hi, I'm <b>Argus</b>, an AI that watches AI and finance news.
 Ask me anything about AI, markets or tech, and I'll search the web and answer.
@@ -122,16 +119,6 @@ async def cmd_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     asyncio.create_task(run_job("research", topic))
 
 
-async def cmd_video(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    topic = " ".join(ctx.args).strip()
-    if not topic:
-        await update.message.reply_text("What should the video be about? e.g. /video why the Nasdaq just erased 2026")
-        return
-    await update.message.reply_html(f"🎬 Making a video on <b>{esc(topic)}</b>: researching, scripting, rendering. "
-                                    "Usually 10–25 min.")
-    asyncio.create_task(run_job("video", topic))
-
-
 def _watch_line(wid: int) -> str:
     from .watches import summary_lines
     w = next((x for x in summary_lines() if x["id"] == wid), None)
@@ -174,12 +161,6 @@ async def _apply_watch(spec: dict) -> None:
         prog.done(False, str(e)[:100])
         report = f"⚠️ Couldn't set up the watch: {esc(str(e)[:300])}"
     await asyncio.to_thread(send, report, None, True, OWNER, "watch_setup")
-
-
-async def cmd_daily(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    series = [s for s in ctx.args if s in ("ai", "finance")] or ["ai", "finance"]
-    await update.message.reply_text(f"🎬 Drafting {' + '.join(series)} daily now (draft → fact-check → you approve).")
-    asyncio.create_task(run_job("daily", *series))
 
 
 async def cmd_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -225,9 +206,7 @@ async def cmd_guests(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 OWNER_RULES = """Reply for Telegram (HTML subset only: <b>, <i>, <a href>, <code>, <pre>; no markdown). Be concise.
 Action rules:
 - Only start costly or outward-facing work when the owner clearly asks for it. A bare "this", "ok" or "do it" after an
-  explanation is NOT a request to make a video or a report. If you're unsure what they want, ask one short question.
-- You can't render videos in chat. If the owner clearly asks for a video, or you think one is clearly worth making,
-  end your reply with one line: [[PROPOSE_VIDEO: <topic and angle in one line>]]. The bot shows a confirm button.
+  explanation is NOT a request to write a report. If you're unsure what they want, ask one short question.
 - For a full research report (deep dive, PDF), end with: [[PROPOSE_RESEARCH: <topic>]]. Quick questions you just answer.
 - Watches (topics/sites the owner wants monitored): when asked to watch a sector, topic, company or site, research it
   first (WebSearch; find the best outlets, their RSS feeds, key players, regulators, research pages). Check sites with
@@ -245,7 +224,7 @@ Action rules:
   Never copy or retype long URLs (Google News links break). Query items with COALESCE(real_url, url) if you need to see it.
 - Specialists you can delegate to with the Agent tool: researcher (focused investigation), fact-checker (verify numbers
   and claims before you state them as fact), source-scout (design a new watch: returns the spec you then propose),
-  digest-editor, video-producer (drafting only in chat; rendering needs the owner's tap). Delegate when it improves
+  digest-editor. Delegate when it improves
   quality; answer simple things yourself.
 - Papers: fetch arXiv papers with `~/venv/bin/python -m argus.library get <id>`, never into reports/. Other downloads
   go in data/downloads/."""
@@ -317,11 +296,11 @@ def _chat_turn(text: str, chat_id: int, guest: bool, update_msg=None) -> str:
                   + f"[Telegram message from the owner]\n{text}\n\n{OWNER_RULES}")
         with brain_lock(wait_s=900):
             try:
-                out = claude(prompt, timeout=1500, resume=meta.get("sid"), progress=prog, disallow=CHAT_DISALLOW)
+                out = claude(prompt, timeout=1500, resume=meta.get("sid"), progress=prog)
             except ClaudeError:
                 if not meta.get("sid"):
                     raise
-                out = claude(prompt, timeout=1500, progress=prog, disallow=CHAT_DISALLOW)
+                out = claude(prompt, timeout=1500, progress=prog)
                 meta["turns"] = 0
         meta.update(sid=out.get("session_id", ""), last_ts=time.time(), turns=meta.get("turns", 0) + 1)
         kv_set(c, "chat_meta", json.dumps(meta))
@@ -372,8 +351,8 @@ def _with_proposals(reply: str) -> tuple[str, list | None]:
     c = db()
     pid = int(time.time() * 1000) % 10_000_000
     kv_set(c, f"proposal:{pid}", json.dumps({"kind": kind, "topic": topic}))
-    label = "🎬 Make the video" if kind == "video" else "📄 Write the report"
-    reply += f"\n\n<i>{'🎬 Video' if kind == 'video' else '📄 Report'} idea: {esc(topic)}</i>"
+    label = "📄 Write the report"
+    reply += f"\n\n<i>📄 Report idea: {esc(topic)}</i>"
     return reply, [[{"text": label, "callback_data": f"prop:{pid}:yes"}, {"text": "✋ No", "callback_data": f"prop:{pid}:no"}]]
 
 
@@ -519,16 +498,10 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.answer()
         return
 
-    if parts[0] == "daily" and len(parts) == 4:
-        _, date, series, yn = parts
+    if parts[0] == "daily" or (parts[0] == "prop" and len(parts) == 3 and parts[2] == "yes"
+                               and json.loads(kv_get(c, f"proposal:{parts[1]}") or "{}").get("kind") == "video"):
+        await q.answer("Video making was removed")
         await q.edit_message_reply_markup(reply_markup=None)
-        if yn == "yes":
-            await q.answer("Rendering 🎞")
-            asyncio.create_task(run_job("dailyrender", date, series))
-        else:
-            from .daily import skip
-            skip(date, series)
-            await q.answer("Skipped ✋")
         return
 
     if parts[0] == "noop":
@@ -551,9 +524,8 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if parts[2] == "yes":
             await q.answer("Starting 🚀")
             await q.edit_message_reply_markup(reply_markup=None)
-            job = "video" if p["kind"] == "video" else "research"
-            await ctx.bot.send_message(OWNER, f"{'🎬' if job == 'video' else '📄'} Starting: {p['topic']}")
-            asyncio.create_task(run_job(job, p["topic"]))
+            await ctx.bot.send_message(OWNER, f"📄 Starting: {p['topic']}")
+            asyncio.create_task(run_job("research", p["topic"]))
         else:
             await q.answer("Okay, skipped")
             await q.edit_message_reply_markup(reply_markup=None)
@@ -568,10 +540,7 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif action == "dig" and row:
         await q.answer("Digging in 🔎")
         asyncio.create_task(run_job("research", f"{row['title']} ({row['url']}): what happened, why it matters, "
-                                                "second-order effects, and video angles"))
-    elif action == "vid" and row:
-        await q.answer("On it 🎬")
-        asyncio.create_task(run_job("video", f"item:{item_id}"))
+                                                "second-order effects, and content angles"))
     else:
         await q.answer()
 
@@ -582,8 +551,8 @@ def main():
     app = Application.builder().token(TG_TOKEN).build()
     app.add_handler(CommandHandler(["start", "help"], on_start))
     for name, fn in [("status", cmd_status), ("scan", cmd_scan), ("brief", cmd_brief), ("research", cmd_research),
-                     ("video", cmd_video), ("new", cmd_new), ("codeword", cmd_codeword), ("guests", cmd_guests),
-                     ("watches", cmd_watches), ("daily", cmd_daily)]:
+                     ("new", cmd_new), ("codeword", cmd_codeword), ("guests", cmd_guests),
+                     ("watches", cmd_watches)]:
         app.add_handler(CommandHandler(name, fn, filters=ONLY_OWNER))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, on_text))
     app.add_handler(CallbackQueryHandler(on_button))

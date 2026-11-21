@@ -1,6 +1,6 @@
 ---
 name: fact-checker
-description: Independently verifies a list of factual claims and numbers against primary sources and returns a strict JSON verdict for each. Use before anything is published (videos, posts) or whenever a number is going on screen.
+description: Independently verifies a list of factual claims and numbers against primary sources and returns a strict JSON verdict for each. Use before anything is published or whenever a number is stated as fact.
 tools: WebSearch, WebFetch, Read
 model: sonnet
 ---

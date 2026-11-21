@@ -42,7 +42,6 @@ def _load_env_file(path: pathlib.Path) -> dict[str, str]:
 
 CLAUDE_ENV = _load_env_file(SECRETS / "env")            # CLAUDE_CODE_OAUTH_TOKEN
 TG_ENV = _load_env_file(SECRETS / "telegram.env")       # TELEGRAM_BOT_TOKEN, OWNER_CHAT_ID
-CCSTUDIO_ENV = _load_env_file(SECRETS / "ccstudio.env")  # CCSTUDIO_AUTH (Authorization header for the MCP)
 TG_TOKEN = TG_ENV.get("TELEGRAM_BOT_TOKEN", "")
 OWNER = int(TG_ENV.get("OWNER_CHAT_ID", "0") or 0)
 GUEST_DIR = HOME / "argus-guest"      # outside the repo: no CLAUDE.md, settings, db or MCP leak into guest chats
@@ -439,12 +438,6 @@ def describe_tool(name: str, inp: dict) -> str:
         if "curl" in cmd:
             return "⬇️ downloading"
         return f"⚙️ {_short(inp.get('description') or cmd, 60)}"
-    if name.startswith("mcp__ccstudio__"):
-        tool = name.split("__")[-1]
-        return {"validate_script": "✅ validating the script", "preview_video": "🖼 previewing the layout",
-                "render_video": "🎞 rendering the video", "get_job": "⏳ checking render progress",
-                "export_video": "📦 exporting files", "get_outputs": "📋 collecting title & description",
-                "list_voices": "🎙 picking a voice"}.get(tool, f"🎬 studio: {tool}")
     if name == "ToolSearch":
         return "🧰 loading tools"
     return f"⚙️ {name}"
@@ -571,11 +564,9 @@ def markdown_to_pdf(md_path: pathlib.Path, title: str = "") -> pathlib.Path:
 
 # ---------------------------------------------------------------- claude
 def _claude_env(guest: bool = False) -> dict[str, str]:
-    """Environment for the brain: the Claude token, but NOT the Telegram token. Guests get no CC Studio either."""
+    """Environment for the brain: the Claude token, but NOT the Telegram token."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(("TELEGRAM", "CCSTUDIO"))}
     env.update(CLAUDE_ENV)
-    if not guest:
-        env.update(CCSTUDIO_ENV)
     env["PATH"] = f"{HOME}/.local/bin:{HOME}/venv/bin:{env.get('PATH', '/usr/bin:/bin')}"
     return env
 

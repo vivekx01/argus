@@ -1,7 +1,4 @@
 {
-  "enabledMcpjsonServers": [
-    "ccstudio"
-  ],
   "permissions": {
     "allow": [
       "Task",
@@ -26,15 +23,7 @@
       "Bash(jq:*)",
       "Bash(date:*)",
       "Bash(~/venv/bin/python:*)",
-      "Bash(/home/argus/venv/bin/python:*)",
-      "mcp__ccstudio__validate_script",
-      "mcp__ccstudio__preview_video",
-      "mcp__ccstudio__render_video",
-      "mcp__ccstudio__get_job",
-      "mcp__ccstudio__list_jobs",
-      "mcp__ccstudio__get_outputs",
-      "mcp__ccstudio__export_video",
-      "mcp__ccstudio__list_voices"
+      "Bash(/home/argus/venv/bin/python:*)"
     ],
     "deny": [
       "Read(~/.argus/**)",
@@ -54,8 +43,7 @@
       "Bash(rm:*)",
       "Bash(sudo:*)",
       "Bash(docker:*)",
-      "Bash(git push:*)",
-      "mcp__ccstudio__confirm_job"
+      "Bash(git push:*)"
     ]
   }
 }

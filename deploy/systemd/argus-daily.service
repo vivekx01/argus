@@ -1,9 +1,0 @@
-[Unit]
-Description=Argus daily videos (AI Daily then Finance Daily drafts)
-
-[Service]
-Type=oneshot
-WorkingDirectory=%h/argus
-ExecStart=%h/venv/bin/python -m argus.jobs daily
-TimeoutStartSec=7200
-Nice=10

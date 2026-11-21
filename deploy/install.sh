@@ -19,13 +19,18 @@ mkdir -p data/papers data/downloads notes reports ~/.config/systemd/user
 
 # guest sandbox: outside the repo so no CLAUDE.md, settings, db or MCP config is visible to guest chats
 mkdir -p ~/argus-guest && cp deploy/guest-CLAUDE.md ~/argus-guest/CLAUDE.md
-[ -f ~/.argus/ccstudio.env ] || echo "note: ~/.argus/ccstudio.env missing, so /video will not work"
+
+# retired units (daily videos were removed): stop them and drop their dangling links
+for u in argus-daily.timer argus-daily.service; do
+  systemctl --user disable --now "$u" 2>/dev/null || true
+  [ -e deploy/systemd/"$u" ] || rm -f ~/.config/systemd/user/"$u"
+done
 
 for f in deploy/systemd/*; do
   ln -sf "$PWD/$f" ~/.config/systemd/user/"$(basename "$f")"
 done
 systemctl --user daemon-reload
-systemctl --user enable --now argus-fetch.timer argus-triage.timer argus-brief.timer argus-weekly.timer argus-backup.timer argus-watchdigest.timer argus-daily.timer
+systemctl --user enable --now argus-fetch.timer argus-triage.timer argus-brief.timer argus-weekly.timer argus-backup.timer argus-watchdigest.timer
 systemctl --user enable argus-bot.service argus-web.service
 systemctl --user restart argus-bot.service argus-web.service
 

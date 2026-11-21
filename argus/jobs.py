@@ -342,8 +342,7 @@ def triage(quiet: bool = False) -> str:
                f"<a href=\"{esc(link_of(r))}\">Read source</a>")
         send(msg, kind="alert", item_id=r["id"], buttons=[[{"text": "👍", "callback_data": f"up:{r['id']}"},
                             {"text": "👎", "callback_data": f"down:{r['id']}"},
-                            {"text": "🔎 Dig deeper", "callback_data": f"dig:{r['id']}"}],
-                           [{"text": "🎬 Make a video", "callback_data": f"vid:{r['id']}"}]])
+                            {"text": "🔎 Dig deeper", "callback_data": f"dig:{r['id']}"}]])
     info = f"triaged={len(rows)} returned={len(verdicts)} alerts={min(len(alerts), MAX_ALERTS_PER_RUN)} ({out['_seconds']}s)"
     log_run("triage", True, info)
     return info
@@ -478,26 +477,6 @@ def _live_done(ok: bool = True, msg: str = "") -> None:
         _PROG = None
 
 
-# ================================================================ video (brain + CC Studio MCP)
-def video(request: str) -> str:
-    """Make a Reel/Short with CC Studio. `request` is a topic, or 'item:<id>' for a story in the db."""
-    m = re.fullmatch(r"item:(\d+)", request.strip())
-    context = ""
-    if m:
-        r = db().execute("SELECT title, url, source, why, hook, summary FROM items WHERE id=?", (int(m.group(1)),)).fetchone()
-        if r:
-            context = json.dumps(dict(r), ensure_ascii=False)
-            request = r["title"]
-    prog = _live(f"🎬 Making a video: {request[:60]}…")
-    out = claude(prompt_file("video", REQUEST=request, CONTEXT=context or "(none: research the topic yourself)"),
-                 timeout=3600, progress=prog, agent="video-producer", label="video")
-    _live_done(True, "video ready")
-    send(out["result"].strip(), kind="video")
-    rendered = "mcp__ccstudio__render_video" in out.get("_tools", [])
-    log_run("video", rendered, f"{request[:80]}{'' if rendered else ' (no render happened)'} ({out['_seconds']}s)")
-    return "ok"
-
-
 # ================================================================ backup (no AI)
 BACKUPS = HOME / "backups"
 KEEP_BACKUPS = 30
@@ -546,8 +525,8 @@ def status() -> str:
 # ================================================================ cli
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("job", choices=["fetch", "triage", "brief", "weekly", "research", "video", "status", "backup",
-                                    "watchdigest", "daily", "dailyrender"])
+    ap.add_argument("job", choices=["fetch", "triage", "brief", "weekly", "research", "status", "backup",
+                                    "watchdigest"])
     ap.add_argument("topic", nargs="*")
     ap.add_argument("--quiet", action="store_true", help="triage without sending alerts")
     ap.add_argument("--live", action="store_true", help="show a live progress message in Telegram")
@@ -568,23 +547,6 @@ def main():
                     if channel_active():
                         print(triage(quiet=a.quiet))
                     print(triage_watches(quiet=a.quiet))
-                elif a.job == "daily":
-                    from . import daily
-                    for series in (a.topic or ["ai", "finance"]):          # one after the other
-                        prog = Progress(f"{daily.SERIES[series]['emoji']} Drafting {daily.SERIES[series]['name']}…") if LIVE else None
-                        try:
-                            print(series, daily.draft(series, progress=prog))
-                            if prog: prog.done(True)
-                        except Exception as e:
-                            if prog: prog.done(False, str(e)[:100])
-                            log_run("daily", False, f"{series}: {e}"[:300])
-                            send(f"⚠️ {daily.SERIES[series]['name']} draft failed: {esc(str(e)[:300])}")
-                elif a.job == "dailyrender":
-                    from . import daily
-                    date, series = a.topic[0], a.topic[1]
-                    prog = _live(f"🎞 Rendering {daily.SERIES[series]['name']}…")
-                    print(daily.render(date, series, progress=prog))
-                    _live_done(True)
                 elif a.job == "watchdigest":
                     from .watches import digest_watches
                     only = int(a.topic[0]) if a.topic and a.topic[0].isdigit() else None
@@ -596,8 +558,6 @@ def main():
                     print(weekly())
                 elif a.job == "research":
                     print(research(" ".join(a.topic)))
-                elif a.job == "video":
-                    print(video(" ".join(a.topic)))
     except (ClaudeError, TimeoutError, ValueError) as e:
         _live_done(False, str(e)[:120])
         log_run(a.job, False, str(e))
