@@ -308,10 +308,11 @@ def backup() -> str:
     src.backup(dst)
     dst.close(); src.close()
     tar = BACKUPS / f"argus-{stamp}.tar.gz"
+    no_pdfs = lambda ti: None if ti.name.lower().endswith(".pdf") else ti   # re-downloadable; text is in the db
     with tarfile.open(tar, "w:gz") as t:
         t.add(snap, "argus.db")
-        t.add(NOTES, "notes")
-        t.add(REPORTS, "reports")
+        t.add(NOTES, "notes", filter=no_pdfs)
+        t.add(REPORTS, "reports", filter=no_pdfs)
     snap.unlink()
     old = sorted(BACKUPS.glob("argus-*.tar.gz"))[:-KEEP_BACKUPS]
     for f in old:

@@ -85,7 +85,7 @@ def search(q: str, limit: int = 10) -> None:
                           FROM papers_fts JOIN papers p ON p.rowid = papers_fts.rowid
                           WHERE papers_fts MATCH ? ORDER BY bm25(papers_fts) LIMIT ?""", (fq, limit)):
         flag = "📖 read" if r["read_at"] else ""
-        print(f"- {r['arxiv_id']} | {r['title']} | ▲{r['upvotes'] or 0} {flag}\n    {r['snip']}")
+        print(f"- {r['arxiv_id']} | {r['title']} | ▲{r['upvotes'] or 0} {flag}\n    {' '.join((r['snip'] or '').split())}")
     print(f"\n## News items matching: {q}")
     for r in c.execute("""SELECT i.id, i.score, i.fetched_at, i.source, i.title, i.url
                           FROM items_fts JOIN items i ON i.id = items_fts.rowid
