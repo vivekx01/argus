@@ -190,7 +190,7 @@ def resolve_links(item_ids: list[int], limit: int = 15) -> None:
                 pg.goto(r["url"], timeout=25000, wait_until="domcontentloaded")
                 for _ in range(10):
                     if "news.google.com" not in pg.url and "consent." not in pg.url:
-                        real = pg.url.split("?utm_")[0]
+                        real = pg.url.split("?__cf_chl")[0].split("?utm_")[0]
                         break
                     pg.wait_for_timeout(1000)
             except Exception:
