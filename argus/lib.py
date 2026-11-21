@@ -486,7 +486,10 @@ def markdown_to_pdf(md_path: pathlib.Path, title: str = "") -> pathlib.Path:
     """Render a Markdown report to a phone-sized PDF using the local headless Chromium."""
     import markdown as md
     from playwright.sync_api import sync_playwright
-    body = md.markdown(md_path.read_text(errors="replace"), extensions=["tables", "fenced_code", "sane_lists"])
+    src = md_path.read_text(errors="replace")
+    # Python-Markdown needs 4-space nesting; models usually write 2-space nested bullets
+    src = re.sub(r"(?m)^((?:  )+)(?=(?:[-*+]|\d+\.)\s)", lambda m: "    " * (len(m.group(1)) // 2), src)
+    body = md.markdown(src, extensions=["tables", "fenced_code", "sane_lists"])
     page_html = (f"<!doctype html><html><head><meta charset='utf-8'><title>{esc(title)}</title>"
                  f"<style>{REPORT_CSS}</style></head><body><div class='brand'>👁 ARGUS RESEARCH · "
                  f"{time.strftime('%d %b %Y')}</div>{body}</body></html>")
