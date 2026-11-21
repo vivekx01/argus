@@ -86,7 +86,10 @@ def draft(series: str, progress=None) -> str:
     kv_set(c, _key(date, series), json.dumps({"path": str(path), "plan": plan, "verdicts": verdicts,
                                               "status": "awaiting", "series": series}))
     ok = sum(v.get("verdict") == "confirmed" for v in verdicts)
-    stories = "\n".join(f"• <b>{esc(x.get('headline', ''))}</b>: {esc(x.get('number', ''))} "
+    def _num(x):
+        n = str(x.get("number") or "").strip()
+        return "" if not n or n.lower().startswith(("none", "n/a", "no ")) else f": {esc(n)}"
+    stories = "\n".join(f"• <b>{esc(x.get('headline', ''))}</b>{_num(x)} · "
                         f"<a href=\"{esc(x.get('source_url', '#'))}\">{esc(x.get('source', 'source'))}</a>"
                         for x in plan.get("stories", []))
     send(f"{s['emoji']} <b>{s['name']} draft</b>: {esc(plan.get('title', ''))}\n"
