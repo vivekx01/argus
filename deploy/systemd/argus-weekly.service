@@ -1,0 +1,11 @@
+[Unit]
+Description=Argus weekly
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/argus
+ExecStart=%h/venv/bin/python -m argus.jobs weekly
+TimeoutStartSec=3600
+Nice=10

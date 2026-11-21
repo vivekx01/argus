@@ -1,0 +1,10 @@
+[Unit]
+Description=Argus brain: triage 6x a day
+
+[Timer]
+OnCalendar=*-*-* 00,09,12,15,18,21:05:00 Asia/Kolkata
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

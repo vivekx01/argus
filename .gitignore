@@ -1,0 +1,19 @@
+# runtime state: lives only on the server
+data/
+notes/
+reports/
+*.db
+*.db-*
+*.lock
+
+# secrets: never commit
+.env
+*.env
+.argus/
+.claude/settings.local.json
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/

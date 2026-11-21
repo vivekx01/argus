@@ -1,0 +1,10 @@
+[Unit]
+Description=Argus brain: weekly review Sunday 10:00 IST
+
+[Timer]
+OnCalendar=Sun *-*-* 10:00:00 Asia/Kolkata
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

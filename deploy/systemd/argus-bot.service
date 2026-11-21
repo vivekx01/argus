@@ -1,0 +1,13 @@
+[Unit]
+Description=Argus Telegram bot (voice and ears)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/argus
+ExecStart=%h/venv/bin/python -m argus.bot
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

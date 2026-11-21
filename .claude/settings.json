@@ -1,0 +1,44 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Write",
+      "Edit",
+      "WebSearch",
+      "WebFetch",
+      "Bash(curl:*)",
+      "Bash(pdftotext:*)",
+      "Bash(pdfinfo:*)",
+      "Bash(sqlite3:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir:*)",
+      "Bash(wc:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(jq:*)",
+      "Bash(date:*)",
+      "Bash(~/venv/bin/python:*)",
+      "Bash(/home/argus/venv/bin/python:*)"
+    ],
+    "deny": [
+      "Read(~/.argus/**)",
+      "Edit(~/.argus/**)",
+      "Write(~/.argus/**)",
+      "Edit(./argus/**)",
+      "Write(./argus/**)",
+      "Edit(./deploy/**)",
+      "Write(./deploy/**)",
+      "Edit(./.claude/**)",
+      "Write(./.claude/**)",
+      "Edit(./CLAUDE.md)",
+      "Write(./CLAUDE.md)",
+      "Bash(rm:*)",
+      "Bash(sudo:*)",
+      "Bash(docker:*)",
+      "Bash(git push:*)"
+    ]
+  }
+}

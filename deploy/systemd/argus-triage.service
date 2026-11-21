@@ -1,0 +1,11 @@
+[Unit]
+Description=Argus triage
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/argus
+ExecStart=%h/venv/bin/python -m argus.jobs triage
+TimeoutStartSec=2400
+Nice=10
