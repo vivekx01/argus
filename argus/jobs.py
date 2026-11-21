@@ -292,6 +292,7 @@ def triage(quiet: bool = False) -> str:
     c = db()
     # anything older than 2 days that was never triaged is stale
     c.execute("UPDATE items SET status='skipped' WHERE watch_id=1 AND status='new' AND fetched_at < datetime('now','-2 days')")
+    c.commit()  # never hold the write lock across the (long) brain call: it blocked fetch and deadlocked triage_model()
     rows = c.execute("SELECT * FROM items WHERE watch_id=1 AND status='new' ORDER BY id DESC LIMIT ?", (TRIAGE_BATCH,)).fetchall()
     if not rows:
         return "nothing new"

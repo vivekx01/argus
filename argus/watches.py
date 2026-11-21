@@ -271,6 +271,7 @@ def triage_watches(quiet: bool = False, only: int | None = None) -> str:
         wid = w["id"]
         c.execute("UPDATE items SET status='skipped' WHERE watch_id=? AND status='new' "
                   "AND fetched_at < datetime('now','-2 days')", (wid,))
+        c.commit()  # release the write lock before the brain call
         rows = c.execute("SELECT * FROM items WHERE watch_id=? AND status='new' ORDER BY id DESC LIMIT ?",
                          (wid, TRIAGE_BATCH)).fetchall()
         if not rows:

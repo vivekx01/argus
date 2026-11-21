@@ -230,9 +230,16 @@ END;
 """
 
 
+_SCHEMA_READY = False
+
+
 def db() -> sqlite3.Connection:
-    c = sqlite3.connect(DATA / "argus.db", timeout=30)
+    global _SCHEMA_READY
+    c = sqlite3.connect(DATA / "argus.db", timeout=60)
     c.row_factory = sqlite3.Row
+    if _SCHEMA_READY:  # schema/migrations once per process; later connections are plain (no write lock needed)
+        return c
+    _SCHEMA_READY = True
     had_fts = c.execute("SELECT 1 FROM sqlite_master WHERE name='items_fts'").fetchone()
     _migrate_items_to_watches(c)
     c.executescript(SCHEMA)
