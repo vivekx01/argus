@@ -1,0 +1,10 @@
+[Unit]
+Description=Argus watch digests 08:15 IST (daily watches every day, weekly ones on Monday)
+
+[Timer]
+OnCalendar=*-*-* 08:15:00 Asia/Kolkata
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

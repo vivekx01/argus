@@ -31,6 +31,7 @@ CHAT_DISALLOW = ["mcp__ccstudio__render_video", "mcp__ccstudio__export_video"]  
 PROPOSAL = re.compile(r"\[\[PROPOSE_(VIDEO|RESEARCH):\s*(.+?)\]\]", re.S)
 REVOKE_PROPOSAL = re.compile(r"\[\[PROPOSE_REVOKE:\s*(-?\d+)\s*\|?\s*(.*?)\]\]", re.S)
 FLAG = re.compile(r"\[\[FLAG_ABUSE:\s*(.+?)\]\]", re.S)
+WATCH_SPEC = re.compile(r"<<<WATCH_SPEC\s*(\{.*?\})\s*WATCH_SPEC>>>", re.S)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)   # its INFO lines include the bot token in the URL
@@ -47,6 +48,7 @@ Just talk to me, or:
 /video &lt;topic&gt;: make a Reel/Short with CC Studio
 /scan: triage new items now · /brief: today's brief now
 /status: what I've been doing · /new: fresh conversation
+/watches: what I keep an eye on (pause, digest now, remove)
 /guests: who has access, pending requests · /codeword &lt;word&gt;: set the access codeword
 
 On alerts: 👍/👎 teach me your taste, 🔎 digs deeper, 🎬 makes a video."""
@@ -129,6 +131,50 @@ async def cmd_video(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     asyncio.create_task(run_job("video", topic))
 
 
+def _watch_line(wid: int) -> str:
+    from .watches import summary_lines
+    w = next((x for x in summary_lines() if x["id"] == wid), None)
+    if not w:
+        return "(removed)"
+    state = "⏸ paused" if w["status"] != "active" else "▶️ active"
+    digest = "07:30 brief + Sunday weekly" if w["id"] == 1 else f"{w['digest']} digest"
+    bad = f" · ⚠️ {w['failing']} failing" if w["failing"] else ""
+    return (f"{w['emoji']} <b>#{w['id']} {esc(w['name'])}</b> ({state})\n"
+            f"{w['sources']} sources{bad} · {w['items_24h']} stories in 24h · alerts at {w['alert_threshold']}+ · {digest}")
+
+
+def _watch_buttons(wid: int) -> InlineKeyboardMarkup:
+    w = db().execute("SELECT status FROM watches WHERE id=?", (wid,)).fetchone()
+    paused = bool(w and w["status"] != "active")
+    row = [InlineKeyboardButton("▶️ Resume" if paused else "⏸ Pause",
+                                callback_data=f"{'wresume' if paused else 'wpause'}:{wid}"),
+           InlineKeyboardButton("📰 Digest now", callback_data=f"wdigest:{wid}")]
+    if wid != 1:
+        row.append(InlineKeyboardButton("🗑 Remove", callback_data=f"wdel:{wid}"))
+    return InlineKeyboardMarkup([row])
+
+
+async def cmd_watches(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    from .watches import summary_lines
+    ws = summary_lines()
+    await update.message.reply_html(f"👁 <b>Watches</b> ({len(ws)}). To add one, just tell me what to keep an eye on, "
+                                    "e.g. <i>watch the Indian warehousing sector</i>.")
+    for w in ws:
+        await update.message.reply_html(_watch_line(w["id"]), reply_markup=_watch_buttons(w["id"]))
+
+
+async def _apply_watch(spec: dict) -> None:
+    from .watches import apply_spec
+    prog = Progress("👁 Setting up the watch…", show_after=2)
+    try:
+        report = await asyncio.to_thread(apply_spec, spec, prog)
+        prog.done(True)
+    except Exception as e:
+        prog.done(False, str(e)[:100])
+        report = f"⚠️ Couldn't set up the watch: {esc(str(e)[:300])}"
+    await asyncio.to_thread(send, report, None, True, OWNER, "watch_setup")
+
+
 async def cmd_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kv_set(db(), "chat_meta", "{}")
     await update.message.reply_text("🧹 Fresh conversation started.")
@@ -176,6 +222,16 @@ Action rules:
 - You can't render videos in chat. If the owner clearly asks for a video, or you think one is clearly worth making,
   end your reply with one line: [[PROPOSE_VIDEO: <topic and angle in one line>]]. The bot shows a confirm button.
 - For a full research report (deep dive, PDF), end with: [[PROPOSE_RESEARCH: <topic>]]. Quick questions you just answer.
+- Watches (topics/sites the owner wants monitored): when asked to watch a sector, topic, company or site, research it
+  first (WebSearch; find the best outlets, their RSS feeds, key players, regulators, research pages). Check sites with
+  `~/venv/bin/python -m argus.watches discover <url>`; existing watches: `~/venv/bin/python -m argus.watches list`.
+  Then end your reply with a spec block (the owner gets a confirm button; nothing starts before that):
+  <<<WATCH_SPEC {"name": "...", "emoji": "🏗", "purpose": "why the owner cares", "rubric": "what scores 8-10 / 5-7 /
+  noise, concretely, with thresholds", "alert_threshold": 8, "digest": "weekly|daily|none", "sources": [
+  {"name": "ET Realty", "kind": "rss", "url": "..."}, {"name": "Warehousing deals", "kind": "gnews",
+  "query": "warehousing lease India", "region": "IN"}, {"name": "JLL India research", "kind": "site", "url": "..."}]}
+  WATCH_SPEC>>>   (kinds: rss | gnews | site (auto-detect) | page | sitemap; 8-20 sources; to change an existing watch
+  include "id" (and "replace_sources": true to swap its sources); to add sources to the channel watch use "id": 1.)
 - You can't change who has access. If the owner asks to remove a guest (or you think one should go), find their chat id
   in the inbox/access_requests tables and end with: [[PROPOSE_REVOKE: <chat_id> | <short reason>]]. The owner confirms.
 - Papers: fetch arXiv papers with `~/venv/bin/python -m argus.library get <id>`, never into reports/. Other downloads
@@ -263,6 +319,26 @@ def _chat_turn(text: str, chat_id: int, guest: bool, update_msg=None) -> str:
 
 def _with_proposals(reply: str) -> tuple[str, list | None]:
     """Turn [[PROPOSE_*]] markers into confirm buttons. Nothing runs until the owner taps."""
+    w = WATCH_SPEC.search(reply)
+    if w:
+        reply = WATCH_SPEC.sub("", reply).strip()
+        try:
+            spec = json.loads(w.group(1))
+            srcs = spec.get("sources") or []
+            pid = int(time.time() * 1000) % 10_000_000
+            kv_set(db(), f"proposal:{pid}", json.dumps({"kind": "watch", "spec": spec}))
+            head = f"Update watch #{spec['id']}" if spec.get("id") else "Proposed watch"
+            listing = "\n".join(f"• {esc(x.get('name') or x.get('query') or x.get('url', ''))} "
+                                 f"<i>({esc(x.get('kind', 'site'))})</i>" for x in srcs[:25])
+            reply += (f"\n\n{esc(spec.get('emoji', '👁'))} <b>{head}: {esc(spec.get('name', ''))}</b>\n"
+                      f"{esc(spec.get('purpose', ''))}\n\n<b>Sources ({len(srcs)}):</b>\n{listing}\n\n"
+                      f"<b>Alerts</b> at {spec.get('alert_threshold', 8)}+ · <b>digest</b> {esc(spec.get('digest', 'weekly'))}\n"
+                      f"<i>Want changes? Just tell me before tapping.</i>")
+            label = "✅ Update watch" if spec.get("id") else "✅ Start watching"
+            return reply, [[{"text": label, "callback_data": f"prop:{pid}:yes"},
+                            {"text": "✋ No", "callback_data": f"prop:{pid}:no"}]]
+        except (json.JSONDecodeError, AttributeError, TypeError) as e:
+            reply += f"\n\n<i>(I drafted a watch but its spec was malformed: {esc(str(e)[:80])}. Ask me to try again.)</i>"
     r = REVOKE_PROPOSAL.search(reply)
     if r:
         reply = REVOKE_PROPOSAL.sub("", reply).strip()
@@ -399,6 +475,35 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.answer()
         return
 
+    if parts[0] in ("wpause", "wresume", "wdel", "wdelok", "wdigest") and len(parts) == 2 and parts[1].isdigit():
+        wid = int(parts[1])
+        w = c.execute("SELECT * FROM watches WHERE id=?", (wid,)).fetchone()
+        if not w:
+            await q.answer("No such watch")
+            return
+        if parts[0] in ("wpause", "wresume"):
+            c.execute("UPDATE watches SET status=? WHERE id=?", ("paused" if parts[0] == "wpause" else "active", wid))
+            c.commit()
+            await q.answer("Paused ⏸" if parts[0] == "wpause" else "Resumed ▶️")
+            await q.edit_message_text(_watch_line(wid), parse_mode="HTML", reply_markup=_watch_buttons(wid))
+        elif parts[0] == "wdel":
+            await q.answer()
+            await q.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"🗑 Yes, remove {w['name'][:30]}", callback_data=f"wdelok:{wid}"),
+                InlineKeyboardButton("✋ Keep", callback_data="noop")]]))
+        elif parts[0] == "wdelok" and wid != 1:
+            c.execute("DELETE FROM watch_sources WHERE watch_id=?", (wid,))
+            c.execute("DELETE FROM watches WHERE id=?", (wid,))
+            c.commit()
+            await q.answer("Removed 🗑")
+            await q.edit_message_text(f"🗑 Removed watch: {w['name']} (its past stories stay searchable).")
+        elif parts[0] == "wdigest":
+            await q.answer("Writing it 📰")
+            asyncio.create_task(run_job("watchdigest", str(wid)) if wid != 1 else run_job("brief"))
+        else:
+            await q.answer()
+        return
+
     if parts[0] == "noop":
         await q.answer("Okay 👌")
         await q.edit_message_reply_markup(reply_markup=None)
@@ -411,6 +516,11 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         p = json.loads(raw)
         kv_set(c, f"proposal:{parts[1]}", "")
+        if parts[2] == "yes" and p["kind"] == "watch":
+            await q.answer("Setting it up 👁")
+            await q.edit_message_reply_markup(reply_markup=None)
+            asyncio.create_task(_apply_watch(p["spec"]))
+            return
         if parts[2] == "yes":
             await q.answer("Starting 🚀")
             await q.edit_message_reply_markup(reply_markup=None)
@@ -445,7 +555,8 @@ def main():
     app = Application.builder().token(TG_TOKEN).build()
     app.add_handler(CommandHandler(["start", "help"], on_start))
     for name, fn in [("status", cmd_status), ("scan", cmd_scan), ("brief", cmd_brief), ("research", cmd_research),
-                     ("video", cmd_video), ("new", cmd_new), ("codeword", cmd_codeword), ("guests", cmd_guests)]:
+                     ("video", cmd_video), ("new", cmd_new), ("codeword", cmd_codeword), ("guests", cmd_guests),
+                     ("watches", cmd_watches)]:
         app.add_handler(CommandHandler(name, fn, filters=ONLY_OWNER))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, on_text))
     app.add_handler(CallbackQueryHandler(on_button))

@@ -207,7 +207,15 @@ def link_of(row) -> str:
         return row["url"]
 
 
+def channel_active() -> bool:
+    r = db().execute("SELECT status FROM watches WHERE id=1").fetchone()
+    return not r or r["status"] == "active"
+
+
 def fetch() -> str:
+    from .watches import fetch_watches
+    if not channel_active():
+        return "channel watch paused; " + fetch_watches()
     c = db()
     now = dt.datetime.now(dt.timezone.utc)
     added = dupes = papers_seen = 0
@@ -229,10 +237,10 @@ def fetch() -> str:
                         continue
                 if it["_t"] and (now - it["_t"]).total_seconds() > MAX_AGE_H * 3600:
                     continue
-                if c.execute("SELECT 1 FROM items WHERE url=?", (it["url"],)).fetchone():
+                if c.execute("SELECT 1 FROM items WHERE watch_id=1 AND url=?", (it["url"],)).fetchone():
                     continue
                 n = norm_title(it["title"])
-                same = c.execute("SELECT id FROM items WHERE norm=? AND fetched_at > datetime('now','-3 days')",
+                same = c.execute("SELECT id FROM items WHERE watch_id=1 AND norm=? AND fetched_at > datetime('now','-3 days')",
                                  (n,)).fetchone()
                 if same:  # same headline from another outlet: a signal, not a new item
                     c.execute("UPDATE items SET seen=seen+1 WHERE id=?", (same["id"],))
@@ -257,12 +265,16 @@ def fetch() -> str:
     kv_set(c, "source_status", json.dumps({k: v for k, v in health.items() if k in known}))
     info = f"added={added} dupes={dupes} papers={papers_seen} failed={len(failed)} {failed}"
     log_run("fetch", True, info)
+    try:
+        info += " | " + fetch_watches()
+    except Exception as e:
+        log_run("watchfetch", False, str(e)[:300])
     return info
 
 
 # ================================================================ triage (brain)
 def _taste_context(c) -> str:
-    rows = c.execute("""SELECT i.title, f.vote FROM feedback f JOIN items i ON i.id=f.item_id
+    rows = c.execute("""SELECT i.title, f.vote FROM feedback f JOIN items i ON i.id=f.item_id AND i.watch_id=1
                         ORDER BY f.id DESC LIMIT 40""").fetchall()
     votes = "\n".join(f"{'👍' if r['vote'] > 0 else '👎'} {r['title']}" for r in rows) or "(no votes yet)"
     taste = (NOTES / "taste.md").read_text() if (NOTES / "taste.md").exists() else "(no taste notes yet)"
@@ -272,11 +284,11 @@ def _taste_context(c) -> str:
 def triage(quiet: bool = False) -> str:
     c = db()
     # anything older than 2 days that was never triaged is stale
-    c.execute("UPDATE items SET status='skipped' WHERE status='new' AND fetched_at < datetime('now','-2 days')")
-    rows = c.execute("SELECT * FROM items WHERE status='new' ORDER BY id DESC LIMIT ?", (TRIAGE_BATCH,)).fetchall()
+    c.execute("UPDATE items SET status='skipped' WHERE watch_id=1 AND status='new' AND fetched_at < datetime('now','-2 days')")
+    rows = c.execute("SELECT * FROM items WHERE watch_id=1 AND status='new' ORDER BY id DESC LIMIT ?", (TRIAGE_BATCH,)).fetchall()
     if not rows:
         return "nothing new"
-    recent_alerts = c.execute("SELECT title FROM items WHERE alerted=1 AND fetched_at > datetime('now','-3 days')").fetchall()
+    recent_alerts = c.execute("SELECT title FROM items WHERE watch_id=1 AND alerted=1 AND fetched_at > datetime('now','-3 days')").fetchall()
     items = [{"id": r["id"], "src": r["source"], "cat": r["category"], "seen": r["seen"],
               "title": r["title"], "summary": (r["summary"] or "")[:280]} for r in rows]
     prompt = prompt_file(
@@ -331,13 +343,15 @@ def triage(quiet: bool = False) -> str:
 
 # ================================================================ brief (brain)
 def brief() -> str:
+    if not channel_active():
+        return "channel watch paused"
     try:
         triage()                      # make sure the overnight items are scored
     except Exception as e:
         log_run("triage", False, f"pre-brief: {e}")
     c = db()
     rows = c.execute("""SELECT id, title, source, category, url, score, why, hook, seen, cluster FROM items
-                        WHERE status='triaged' AND score >= 5 AND fetched_at > datetime('now','-26 hours')
+                        WHERE watch_id=1 AND status='triaged' AND score >= 5 AND fetched_at > datetime('now','-26 hours')
                         ORDER BY score DESC, seen DESC LIMIT 40""").fetchall()
     if not rows:
         send("☀️ <b>Morning brief</b>\n\nQuiet night: nothing scored above 5. Argus is still watching 👁", kind="brief")
@@ -364,9 +378,11 @@ def brief() -> str:
 
 # ================================================================ weekly (brain)
 def weekly() -> str:
+    if not channel_active():
+        return "channel watch paused"
     c = db()
     rows = c.execute("""SELECT id, title, source, category, score, why, cluster, seen FROM items
-                        WHERE status='triaged' AND score >= 6 AND fetched_at > datetime('now','-7 days')
+                        WHERE watch_id=1 AND status='triaged' AND score >= 6 AND fetched_at > datetime('now','-7 days')
                         ORDER BY score DESC LIMIT 120""").fetchall()
     out = claude(prompt_file("weekly", ITEMS=json.dumps([dict(r) for r in rows], ensure_ascii=False),
                              TASTE=_taste_context(c)), timeout=1800, progress=_live("📈 Weekly review…"))
@@ -520,7 +536,8 @@ def status() -> str:
 # ================================================================ cli
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("job", choices=["fetch", "triage", "brief", "weekly", "research", "video", "status", "backup"])
+    ap.add_argument("job", choices=["fetch", "triage", "brief", "weekly", "research", "video", "status", "backup",
+                                    "watchdigest"])
     ap.add_argument("topic", nargs="*")
     ap.add_argument("--quiet", action="store_true", help="triage without sending alerts")
     ap.add_argument("--live", action="store_true", help="show a live progress message in Telegram")
@@ -537,7 +554,15 @@ def main():
         else:
             with brain_lock():
                 if a.job == "triage":
-                    print(triage(quiet=a.quiet))
+                    from .watches import triage_watches
+                    if channel_active():
+                        print(triage(quiet=a.quiet))
+                    print(triage_watches(quiet=a.quiet))
+                elif a.job == "watchdigest":
+                    from .watches import digest_watches
+                    only = int(a.topic[0]) if a.topic and a.topic[0].isdigit() else None
+                    print(digest_watches(only=only, force=only is not None,
+                                         progress_factory=(lambda t: Progress(t)) if LIVE else None))
                 elif a.job == "brief":
                     print(brief())
                 elif a.job == "weekly":

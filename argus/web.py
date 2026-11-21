@@ -24,7 +24,7 @@ db().close()   # one writable open at startup applies schema migrations; every r
 app = FastAPI(title="Argus", docs_url=None, redoc_url=None)
 STATIC = ROOT / "argus" / "static"
 UNITS = ["argus-bot.service", "argus-web.service", "argus-fetch.timer", "argus-triage.timer",
-         "argus-brief.timer", "argus-weekly.timer", "argus-backup.timer"]
+         "argus-brief.timer", "argus-weekly.timer", "argus-backup.timer", "argus-watchdigest.timer"]
 JOB_EVERY_MIN = {"fetch": 30, "triage": 9 * 60, "brief": 24 * 60, "weekly": 7 * 24 * 60, "backup": 24 * 60}
 
 
@@ -181,11 +181,32 @@ def overview():
     }
 
 
+@app.get("/api/watches")
+def watches():
+    c = ro()
+    out = []
+    for w in rows(c, "SELECT * FROM watches ORDER BY id"):
+        wid = w["id"]
+        one = lambda sql: c.execute(sql, (wid,)).fetchone()[0]
+        w["items_24h"] = one("SELECT COUNT(*) FROM items WHERE watch_id=? AND fetched_at > datetime('now','-1 day')")
+        w["items_total"] = one("SELECT COUNT(*) FROM items WHERE watch_id=?")
+        w["alerts_7d"] = one("SELECT COUNT(*) FROM items WHERE watch_id=? AND alerted=1 AND fetched_at > datetime('now','-7 days')")
+        w["sources"] = rows(c, "SELECT id, name, kind, url, query, region, ok, fails, error, last_ok, last_at, last_added "
+                               "FROM watch_sources WHERE watch_id=? ORDER BY name", (wid,))
+        if wid == 1:
+            w["builtin_sources"] = len(SOURCES)
+        out.append(w)
+    return out
+
+
 @app.get("/api/items")
-def items(q: str = "", category: str = "", min_score: int = Query(-1), alerted: bool = False, limit: int = 60):
+def items(q: str = "", category: str = "", min_score: int = Query(-1), alerted: bool = False, limit: int = 60,
+          watch: int = 0):
     c = ro()
     where, args = ["1=1"], []
-    base = "SELECT i.id, i.title, i.url, i.source, i.category, i.score, i.why, i.hook, i.seen, i.status, i.alerted, i.fetched_at, i.cluster FROM items i"
+    if watch:
+        where.append("i.watch_id = ?"); args.append(watch)
+    base = "SELECT i.id, i.watch_id, i.title, i.url, i.source, i.category, i.score, i.why, i.hook, i.seen, i.status, i.alerted, i.fetched_at, i.cluster FROM items i"
     if q.strip():
         base += " JOIN items_fts f ON f.rowid = i.id"
         where.append("items_fts MATCH ?"); args.append(fts_query(q))

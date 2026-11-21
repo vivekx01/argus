@@ -94,7 +94,8 @@ SCHEMA = """
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS items(
   id INTEGER PRIMARY KEY,
-  url TEXT UNIQUE,
+  watch_id INTEGER NOT NULL DEFAULT 1,   -- which watch found it; 1 = the built-in AI & Finance channel watch
+  url TEXT,
   title TEXT,
   norm TEXT,
   source TEXT,
@@ -108,9 +109,36 @@ CREATE TABLE IF NOT EXISTS items(
   why TEXT,
   hook TEXT,
   cluster TEXT,
-  alerted INTEGER DEFAULT 0
+  alerted INTEGER DEFAULT 0,
+  real_url TEXT,                   -- publisher URL behind a Google News redirect, resolved lazily
+  UNIQUE(watch_id, url)            -- the same story may matter to several watches, each scoring it its own way
 );
 CREATE INDEX IF NOT EXISTS i_status ON items(status);
+CREATE INDEX IF NOT EXISTS i_watch ON items(watch_id, status);
+
+-- watches: what Argus keeps an eye on. Each has its own sources, scoring rubric, alert bar and digest.
+CREATE TABLE IF NOT EXISTS watches(
+  id INTEGER PRIMARY KEY,
+  name TEXT, emoji TEXT, purpose TEXT,
+  rubric TEXT,                     -- how to score items for this watch (the channel watch uses prompts/triage.md)
+  alert_threshold INTEGER DEFAULT 8,
+  digest TEXT DEFAULT 'weekly',    -- daily | weekly | none
+  status TEXT DEFAULT 'active',    -- active | paused
+  builtin INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  last_digest_at TEXT);
+CREATE TABLE IF NOT EXISTS watch_sources(
+  id INTEGER PRIMARY KEY,
+  watch_id INTEGER, name TEXT,
+  kind TEXT,                       -- rss | gnews | sitemap | page
+  url TEXT, query TEXT, region TEXT,
+  state TEXT DEFAULT '{}',         -- page/sitemap: hashes of links already seen
+  ok INTEGER, fails INTEGER DEFAULT 0, error TEXT, last_ok TEXT, last_at TEXT, last_added INTEGER,
+  added_at TEXT DEFAULT (datetime('now')));
+INSERT OR IGNORE INTO watches(id, name, emoji, purpose, rubric, alert_threshold, digest, builtin) VALUES
+  (1, 'AI & Finance (channel)', '🎬',
+   'Content for the owner''s AI + finance YouTube/Instagram channel, global audience.',
+   '(built-in: prompts/triage.md)', 9, 'daily', 1);
 CREATE INDEX IF NOT EXISTS i_norm ON items(norm);
 CREATE INDEX IF NOT EXISTS i_fetched ON items(fetched_at);
 CREATE TABLE IF NOT EXISTS feedback(
@@ -200,16 +228,34 @@ def db() -> sqlite3.Connection:
     c = sqlite3.connect(DATA / "argus.db", timeout=30)
     c.row_factory = sqlite3.Row
     had_fts = c.execute("SELECT 1 FROM sqlite_master WHERE name='items_fts'").fetchone()
+    _migrate_items_to_watches(c)
     c.executescript(SCHEMA)
-    cols = {r[1] for r in c.execute("PRAGMA table_info(items)")}
-    if "real_url" not in cols:   # publisher URL behind a Google News redirect, resolved lazily
-        c.execute("ALTER TABLE items ADD COLUMN real_url TEXT")
-        c.commit()
     if not had_fts:  # first run after adding FTS: index the rows that already exist
         c.execute("INSERT INTO items_fts(items_fts) VALUES('rebuild')")
         c.execute("INSERT INTO papers_fts(papers_fts) VALUES('rebuild')")
         c.commit()
     return c
+
+
+def _migrate_items_to_watches(c: sqlite3.Connection) -> None:
+    """v1 → v2: items.url was globally UNIQUE; now unique per watch. Rebuild the table, keeping ids (FTS rowids)."""
+    cols = [r[1] for r in c.execute("PRAGMA table_info(items)")]
+    if not cols or "watch_id" in cols:
+        return
+    keep = [x for x in ["id", "url", "title", "norm", "source", "category", "published", "summary", "fetched_at",
+                        "seen", "status", "score", "why", "hook", "cluster", "alerted", "real_url"] if x in cols]
+    c.executescript(f"""
+      BEGIN;
+      CREATE TABLE items_v2(
+        id INTEGER PRIMARY KEY, watch_id INTEGER NOT NULL DEFAULT 1, url TEXT, title TEXT, norm TEXT, source TEXT,
+        category TEXT, published TEXT, summary TEXT, fetched_at TEXT DEFAULT (datetime('now')), seen INTEGER DEFAULT 1,
+        status TEXT DEFAULT 'new', score INTEGER, why TEXT, hook TEXT, cluster TEXT, alerted INTEGER DEFAULT 0,
+        real_url TEXT, UNIQUE(watch_id, url));
+      INSERT INTO items_v2({','.join(keep)}, watch_id) SELECT {','.join(keep)}, 1 FROM items;
+      DROP TABLE items;
+      ALTER TABLE items_v2 RENAME TO items;
+      COMMIT;
+    """)
 
 
 def fts_query(text: str) -> str:

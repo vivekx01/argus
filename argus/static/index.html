@@ -86,6 +86,7 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:12px}
     <nav id="tabs">
       <button data-t="overview" class="on">Overview</button>
       <button data-t="feed">Feed</button>
+      <button data-t="watches">Watches</button>
       <button data-t="sources">Sources</button>
       <button data-t="library">Library</button>
       <button data-t="reports">Reports</button>
@@ -123,6 +124,7 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:12px}
   <section id="t-feed" class="hidden">
     <div class="controls">
       <input type="search" id="fq" placeholder="Search every story (full-text)…">
+      <select id="fwatch"><option value="">All watches</option></select>
       <select id="fcat"><option value="">All categories</option><option>ai</option><option>finance</option>
         <option>ai_finance</option><option>india</option><option>research</option></select>
       <select id="fmin"><option value="-1">Newest first</option><option value="5">Score ≥ 5</option>
@@ -130,6 +132,9 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:12px}
     </div>
     <div class="card"><div id="feed"></div></div>
   </section>
+
+  <!-- WATCHES -->
+  <section id="t-watches" class="hidden grid"><div id="watches" class="grid"></div></section>
 
   <!-- SOURCES -->
   <section id="t-sources" class="hidden">
@@ -223,8 +228,22 @@ async function loadOverview(){
 }
 
 async function loadFeed(){
-  const p = new URLSearchParams({q:$("#fq").value, category:$("#fcat").value, min_score:$("#fmin").value, limit:120});
+  const p = new URLSearchParams({q:$("#fq").value, category:$("#fcat").value, min_score:$("#fmin").value, limit:120, watch:$("#fwatch").value||0});
   const it = await api("/api/items?"+p); $("#feed").innerHTML = it.map(itemHTML).join("") || "<span class=muted>Nothing found</span>";
+}
+async function loadWatches(){
+  const ws = await api("/api/watches"); window._watches = ws;
+  const sel = $("#fwatch"), cur = sel.value;
+  sel.innerHTML = `<option value="">All watches</option>` + ws.map(w => `<option value="${w.id}">${esc(w.emoji)} ${esc(w.name)}</option>`).join(""); sel.value = cur;
+  const items = await Promise.all(ws.map(w => api(`/api/items?watch=${w.id}&min_score=5&limit=6`)));
+  $("#watches").innerHTML = ws.map((w,i) => `<div class="card">
+    <h3>${esc(w.emoji)} ${esc(w.name)} <span class="pill ${w.status==="active"?"ok":"degraded"}" style="margin-left:6px">${w.status}</span></h3>
+    <div class="muted small">${esc(w.purpose||"")}</div>
+    <div class="small" style="margin:8px 0">${(w.builtin_sources||0)+w.sources.length} sources · ${w.items_24h} stories in 24h · ${w.items_total} total · ${w.alerts_7d} alerts (7d) · alerts at ${w.alert_threshold}+ · ${w.id===1?"07:30 brief + Sunday weekly":esc(w.digest)+" digest"}</div>
+    ${w.rubric && w.id!==1 ? `<details class="small"><summary class="muted">Scoring rubric</summary><div style="white-space:pre-wrap;margin-top:6px">${esc(w.rubric)}</div></details>` : ""}
+    ${w.sources.length ? `<div class="tbl" style="margin-top:8px"><table><tr><th>Source</th><th>Kind</th><th>Last</th><th>New</th><th>Status</th></tr>${w.sources.map(s => `<tr><td><span class="dot ${s.ok===null?"":s.ok?"ok":"bad"}"></span>${s.url?`<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.name)}</a>`:esc(s.name)}</td><td><span class="tag">${esc(s.kind)}</span>${s.query?`<span class="muted small">"${esc(s.query)}"</span>`:""}</td><td class="small">${s.last_at?ago(s.last_at):"–"}</td><td>${s.last_added??"–"}</td><td class="small" style="${s.ok===0?"color:var(--bad)":""}">${s.ok===0?esc(s.error)+` (${s.fails}×)`:"ok"}</td></tr>`).join("")}</table></div>` : (w.id===1?`<div class="muted small">Built-in sources: see the Sources tab.</div>`:"")}
+    <h3 style="margin-top:14px">Top recent</h3>${items[i].map(itemHTML).join("") || "<span class=muted>Nothing scored ≥5 yet</span>"}
+  </div>`).join("");
 }
 async function loadSources(){
   if(!window._sources) await loadOverview().catch(()=>{});
@@ -262,13 +281,14 @@ async function loadActivity(){
   $("#runs").innerHTML = `<tr><th>When (IST)</th><th>Job</th><th></th><th>Details</th></tr>` + rs.map(r =>
     `<tr><td class="small">${fmt(r.started)}</td><td>${esc(r.job)}</td><td><span class="dot ${r.ok?"ok":"bad"}"></span></td><td class="small muted">${esc(r.info)}</td></tr>`).join("");
 }
-const loaders = {overview:loadOverview, feed:loadFeed, sources:loadSources, library:loadLibrary, reports:loadReports, access:loadAccess, activity:loadActivity};
+const loaders = {overview:loadOverview, watches:loadWatches, feed:loadFeed, sources:loadSources, library:loadLibrary, reports:loadReports, access:loadAccess, activity:loadActivity};
 async function load(){
   try { await loaders[tab](); $("#updated").textContent = "updated " + new Date().toLocaleTimeString("en-IN", IST); }
   catch(e){ $("#updated").textContent = "⚠ couldn't reach Argus (" + e.message + ")"; }
 }
 let deb; ["#fq","#pq"].forEach(s => $(s).addEventListener("input", () => { clearTimeout(deb); deb = setTimeout(load, 300); }));
-["#fcat","#fmin"].forEach(s => $(s).addEventListener("change", load));
+["#fcat","#fmin","#fwatch"].forEach(s => $(s).addEventListener("change", load));
+api("/api/watches").then(ws => { $("#fwatch").innerHTML = `<option value="">All watches</option>` + ws.map(w => `<option value="${w.id}">${esc(w.emoji)} ${esc(w.name)}</option>`).join(""); }).catch(()=>{});
 $("#modal").onclick = e => { if (e.target.id === "modal") $("#modal").classList.remove("on"); };
 document.addEventListener("keydown", e => { if (e.key === "Escape") $("#modal").classList.remove("on"); });
 try { const t = localStorage.getItem("argus-tab"); if (t && loaders[t]) document.querySelector(`[data-t="${t}"]`).click(); else load(); } catch(e) { load(); }
