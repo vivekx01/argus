@@ -185,12 +185,17 @@ def resolve_links(item_ids: list[int], limit: int = 15) -> None:
         b = p.chromium.launch()
         pg = b.new_page()
         for r in todo:
+            real = ""
             try:
-                pg.goto(r["url"], timeout=20000, wait_until="commit")
-                pg.wait_for_url(lambda u: "news.google.com" not in u, timeout=15000)
-                c.execute("UPDATE items SET real_url=? WHERE id=?", (pg.url.split("?utm_")[0], r["id"]))
+                pg.goto(r["url"], timeout=25000, wait_until="domcontentloaded")
+                for _ in range(10):
+                    if "news.google.com" not in pg.url and "consent." not in pg.url:
+                        real = pg.url.split("?utm_")[0]
+                        break
+                    pg.wait_for_timeout(1000)
             except Exception:
-                c.execute("UPDATE items SET real_url='' WHERE id=?", (r["id"],))   # don't retry forever
+                real = pg.url.split("?utm_")[0] if "news.google.com" not in pg.url else ""
+            c.execute("UPDATE items SET real_url=? WHERE id=?", (real, r["id"]))   # '' = tried, don't retry forever
             c.commit()
         b.close()
 
