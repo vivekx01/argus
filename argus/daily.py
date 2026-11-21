@@ -103,6 +103,16 @@ def draft(series: str, progress=None) -> str:
                      timeout=1800, resume=out.get("session_id"), agent="video-producer", disallow=NO_RENDER,
                      label="daily-fix", progress=progress)
         plan = extract_json(out["result"])
+        # the fix pass can introduce new wording or sources: check the final claims once more
+        if progress:
+            progress.step("🔁 fact-checker: re-checking the fixed script")
+        fc = claude(prompt_file("fact_check", CLAIMS=json.dumps(plan.get("claims", []), ensure_ascii=False)),
+                    timeout=1800, agent="fact-checker", label="factcheck-recheck", progress=progress)
+        first_pass = len(flagged)
+        verdicts = extract_json(fc["result"])
+        flagged = [v for v in verdicts if v.get("verdict") != "confirmed"]
+    else:
+        first_pass = 0
 
     kv_set(c, _key(date, series), json.dumps({"path": str(path), "plan": plan, "verdicts": verdicts, "review": review,
                                               "status": "awaiting", "series": series}))
@@ -117,8 +127,9 @@ def draft(series: str, progress=None) -> str:
          f"<i>~{plan.get('seconds', '?')}s · voice {esc(plan.get('voice', s['voice']))} · validated and previewed</i>\n\n"
          f"{stories}\n\n🎣 <b>Hook:</b> {esc(plan.get('hook', ''))}\n"
          f"📝 <b>Story editor:</b> {review.get('overall', '?')}/10 ({esc(review.get('verdict', '?'))})\n"
-         f"✅ <b>Fact-check:</b> {ok}/{len(verdicts)} confirmed"
-         f"{f', {len(flagged)} fixed or dropped' if flagged else ''}\n"
+         f"✅ <b>Fact-check (final script):</b> {ok}/{len(verdicts)} confirmed"
+         f"{f' · {first_pass} fixed or dropped earlier' if first_pass else ''}\n"
+         f"{_warning(review, flagged)}"
          f"{('📝 ' + esc(plan.get('notes', ''))) if plan.get('notes') else ''}\n\n"
          f"{_narration_block(narration)}"
          f"<i>Want changes? Tell me in chat before rendering.</i>",
@@ -128,6 +139,17 @@ def draft(series: str, progress=None) -> str:
     log_run("daily", True, f"{series}: drafted '{plan.get('title', '')[:60]}', {ok}/{len(verdicts)} confirmed, "
                            f"{len(flagged)} flagged ({out['_seconds']}s)")
     return "drafted"
+
+
+def _warning(review: dict, flagged: list) -> str:
+    """Say plainly when a draft did not pass its gates, so a render is a conscious choice."""
+    out = []
+    if review.get("verdict") != "ship":
+        out.append(f"story editor didn't sign off ({esc(str(review.get('biggest_problem', ''))[:160])})")
+    if flagged:
+        out.append(f"{len(flagged)} claim(s) still not confirmed: "
+                   + "; ".join(esc(str(v.get('claim', ''))[:70]) for v in flagged[:3]))
+    return f"⚠️ <b>Not ready:</b> {' · '.join(out)}\n" if out else ""
 
 
 def _narration_block(narration) -> str:
