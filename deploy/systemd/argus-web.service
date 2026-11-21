@@ -1,0 +1,12 @@
+[Unit]
+Description=Argus dashboard (read-only web UI, port 8787)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/argus
+ExecStart=%h/venv/bin/python -m argus.web
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

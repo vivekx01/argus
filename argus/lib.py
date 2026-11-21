@@ -42,8 +42,51 @@ def _load_env_file(path: pathlib.Path) -> dict[str, str]:
 
 CLAUDE_ENV = _load_env_file(SECRETS / "env")            # CLAUDE_CODE_OAUTH_TOKEN
 TG_ENV = _load_env_file(SECRETS / "telegram.env")       # TELEGRAM_BOT_TOKEN, OWNER_CHAT_ID
+CCSTUDIO_ENV = _load_env_file(SECRETS / "ccstudio.env")  # CCSTUDIO_AUTH (Authorization header for the MCP)
 TG_TOKEN = TG_ENV.get("TELEGRAM_BOT_TOKEN", "")
 OWNER = int(TG_ENV.get("OWNER_CHAT_ID", "0") or 0)
+GUEST_DIR = HOME / "argus-guest"      # outside the repo: no CLAUDE.md, settings, db or MCP leak into guest chats
+
+
+# ---------------------------------------------------------------- access (guests)
+# Lives in ~/.argus so it isn't in git and the brain's tools are denied access to it.
+# Only bot.py changes it, and only when the owner presses a button or sends a command.
+ACCESS = SECRETS / "access.json"
+
+
+def access_load() -> dict:
+    try:
+        a = json.loads(ACCESS.read_text())
+    except Exception:
+        a = {}
+    a.setdefault("codeword_hash", "")
+    a.setdefault("guests", {})          # chat_id(str) -> {name, username, added_at}
+    return a
+
+
+def access_save(a: dict) -> None:
+    tmp = ACCESS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(a, indent=2))
+    tmp.chmod(0o600)
+    tmp.replace(ACCESS)
+
+
+def _cw_hash(s: str) -> str:
+    import hashlib
+    return hashlib.sha256(" ".join((s or "").lower().split()).encode()).hexdigest()
+
+
+def set_codeword(word: str) -> None:
+    a = access_load(); a["codeword_hash"] = _cw_hash(word); access_save(a)
+
+
+def codeword_matches(text: str) -> bool:
+    h = access_load().get("codeword_hash")
+    return bool(h) and _cw_hash(text) == h
+
+
+def is_guest(chat_id: int) -> bool:
+    return str(chat_id) in access_load()["guests"]
 
 
 # ---------------------------------------------------------------- database
@@ -75,6 +118,16 @@ CREATE TABLE IF NOT EXISTS feedback(
 CREATE TABLE IF NOT EXISTS runs(
   id INTEGER PRIMARY KEY, job TEXT, started TEXT DEFAULT (datetime('now')), ok INTEGER, info TEXT);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
+
+-- everyone who messages the bot (owner, guests, strangers); strangers' text is data, never instructions
+CREATE TABLE IF NOT EXISTS inbox(
+  id INTEGER PRIMARY KEY, chat_id INTEGER, username TEXT, name TEXT, text TEXT,
+  kind TEXT,                       -- owner | guest | stranger | codeword
+  at TEXT DEFAULT (datetime('now')));
+CREATE INDEX IF NOT EXISTS i_inbox_chat ON inbox(chat_id, at);
+CREATE TABLE IF NOT EXISTS access_requests(
+  chat_id INTEGER PRIMARY KEY, username TEXT, name TEXT, at TEXT DEFAULT (datetime('now')),
+  status TEXT DEFAULT 'pending');  -- pending | approved | denied | revoked
 
 -- research library ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS papers(
@@ -253,10 +306,12 @@ def send_document(path: pathlib.Path, caption: str = "") -> None:
 
 
 # ---------------------------------------------------------------- claude
-def _claude_env() -> dict[str, str]:
-    """Environment for the brain: the Claude token, but NOT the Telegram token."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith("TELEGRAM")}
+def _claude_env(guest: bool = False) -> dict[str, str]:
+    """Environment for the brain: the Claude token, but NOT the Telegram token. Guests get no CC Studio either."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("TELEGRAM", "CCSTUDIO"))}
     env.update(CLAUDE_ENV)
+    if not guest:
+        env.update(CCSTUDIO_ENV)
     env["PATH"] = f"{HOME}/.local/bin:{HOME}/venv/bin:{env.get('PATH', '/usr/bin:/bin')}"
     return env
 
@@ -265,17 +320,26 @@ class ClaudeError(RuntimeError):
     pass
 
 
-def claude(prompt: str, timeout: int = 900, resume: str | None = None) -> dict:
-    """Run one headless Claude Code turn in the repo dir (so CLAUDE.md + .claude/settings.json apply).
+GUEST_TOOLS = ["--allowedTools", "WebSearch,WebFetch",
+               "--disallowedTools", "Bash,Read,Write,Edit,Glob,Grep,NotebookEdit,Task,Agent"]
 
+
+def claude(prompt: str, timeout: int = 900, resume: str | None = None, guest: bool = False) -> dict:
+    """Run one headless Claude Code turn.
+
+    Owner mode runs in the repo dir (CLAUDE.md, .claude/settings.json, .mcp.json apply).
+    Guest mode runs in ~/argus-guest with web tools only and no secrets, db, notes or MCP.
     Returns the parsed JSON envelope: {result, session_id, is_error, ...}.
     """
     cmd = [str(CLAUDE_BIN), "-p", prompt, "--output-format", "json"]
+    if guest:
+        cmd += GUEST_TOOLS
     if resume:
         cmd += ["--resume", resume]
     t0 = time.time()
     try:
-        p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=timeout, env=_claude_env())
+        p = subprocess.run(cmd, cwd=GUEST_DIR if guest else ROOT, capture_output=True, text=True,
+                           timeout=timeout, env=_claude_env(guest))
     except subprocess.TimeoutExpired:
         raise ClaudeError(f"timed out after {timeout}s")
     try:

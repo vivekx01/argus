@@ -6,3 +6,5 @@ playwright>=1.45
 trafilatura>=1.8
 arxiv>=2.1
 pypdf>=4.0
+fastapi>=0.110
+uvicorn>=0.29

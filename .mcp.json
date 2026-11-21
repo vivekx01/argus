@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "ccstudio": {
+      "type": "http",
+      "url": "https://studio.compoundcode.in/mcp",
+      "headers": {
+        "Authorization": "${CCSTUDIO_AUTH}"
+      }
+    }
+  }
+}

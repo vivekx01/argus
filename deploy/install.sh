@@ -17,13 +17,17 @@ jq --arg p "$PWD" '.projects[$p].hasTrustDialogAccepted = true' "$CJ" > "$CJ.tmp
 chmod 600 "$CJ"
 mkdir -p data/papers notes reports ~/.config/systemd/user
 
+# guest sandbox: outside the repo so no CLAUDE.md, settings, db or MCP config is visible to guest chats
+mkdir -p ~/argus-guest && cp deploy/guest-CLAUDE.md ~/argus-guest/CLAUDE.md
+[ -f ~/.argus/ccstudio.env ] || echo "note: ~/.argus/ccstudio.env missing, so /video will not work"
+
 for f in deploy/systemd/*; do
   ln -sf "$PWD/$f" ~/.config/systemd/user/"$(basename "$f")"
 done
 systemctl --user daemon-reload
 systemctl --user enable --now argus-fetch.timer argus-triage.timer argus-brief.timer argus-weekly.timer argus-backup.timer
-systemctl --user enable argus-bot.service
-systemctl --user restart argus-bot.service
+systemctl --user enable argus-bot.service argus-web.service
+systemctl --user restart argus-bot.service argus-web.service
 
 echo "Argus installed."
 systemctl --user list-timers 'argus-*' --no-pager

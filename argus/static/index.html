@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argus</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👁</text></svg>">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<style>
+:root{
+  --bg:#0b0d12; --panel:#12151d; --panel2:#171b25; --line:#232838; --text:#e7e9ee; --muted:#8b93a7;
+  --accent:#7c9cff; --ok:#3ecf8e; --warn:#f5b54a; --bad:#ff6b6b; --chip:#1d2230;
+}
+@media (prefers-color-scheme: light){
+  :root{--bg:#f5f6f9; --panel:#fff; --panel2:#f0f2f6; --line:#e1e4ec; --text:#141822; --muted:#5d6577;
+        --accent:#3d5cf5; --chip:#eef0f5;}
+}
+*{box-sizing:border-box} html,body{margin:0}
+body{background:var(--bg);color:var(--text);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent);text-decoration:none} a:hover{text-decoration:underline}
+header{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line)}
+.wrap{max-width:1280px;margin:0 auto;padding:0 16px}
+.top{display:flex;align-items:center;gap:12px;height:56px}
+.logo{font-weight:700;font-size:18px;letter-spacing:.3px;display:flex;align-items:center;gap:8px}
+.eye{width:26px;height:26px;border-radius:50%;background:radial-gradient(circle at 50% 50%,#0b0d12 0 28%,var(--accent) 30% 52%,#c9d5ff 54% 100%);
+  box-shadow:0 0 14px color-mix(in srgb,var(--accent) 60%,transparent);animation:blink 6s infinite}
+@keyframes blink{0%,96%,100%{transform:scaleY(1)}98%{transform:scaleY(.1)}}
+.pill{padding:3px 10px;border-radius:99px;font-size:12px;font-weight:600;background:var(--chip);color:var(--muted)}
+.pill.ok{background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
+.pill.degraded{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.pill.down{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
+.spacer{flex:1} .muted{color:var(--muted)} .small{font-size:12px}
+nav{display:flex;gap:4px;overflow-x:auto;padding-bottom:8px;scrollbar-width:none}
+nav button{background:none;border:0;color:var(--muted);padding:6px 12px;border-radius:8px;font:inherit;cursor:pointer;white-space:nowrap}
+nav button.on{background:var(--panel2);color:var(--text)}
+main{padding:18px 0 60px}
+.grid{display:grid;gap:14px}
+.kpis{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.two{grid-template-columns:repeat(auto-fit,minmax(380px,1fr))}
+@media (max-width:520px){.two{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;min-width:0}
+.card h3{margin:0 0 10px;font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.kpi .v{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
+.kpi .l{color:var(--muted);font-size:12px}
+table{width:100%;border-collapse:collapse} td,th{padding:7px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:500;font-size:12px} tr:last-child td{border-bottom:0}
+.tbl{overflow-x:auto}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--muted);margin-right:6px}
+.dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.warn{background:var(--warn)}
+.bars{display:flex;align-items:flex-end;gap:2px;height:90px}
+.bars div{flex:1;background:var(--accent);opacity:.75;border-radius:3px 3px 0 0;min-height:2px}
+.bars div:hover{opacity:1}
+.hbar{display:flex;align-items:center;gap:8px;margin:4px 0}
+.hbar .b{height:10px;border-radius:4px;background:var(--accent)} .hbar .k{width:28px;text-align:right;color:var(--muted)}
+.item{padding:10px 0;border-bottom:1px solid var(--line);display:flex;gap:12px}
+.item:last-child{border-bottom:0}
+.score{flex:0 0 34px;height:34px;border-radius:9px;display:grid;place-items:center;font-weight:700;background:var(--chip)}
+.s9{background:color-mix(in srgb,var(--bad) 25%,transparent);color:var(--bad)}
+.s7{background:color-mix(in srgb,var(--warn) 22%,transparent);color:var(--warn)}
+.s5{background:color-mix(in srgb,var(--accent) 20%,transparent);color:var(--accent)}
+.item .t{font-weight:600} .item .meta{color:var(--muted);font-size:12px;margin-top:2px}
+.hook{font-size:13px;margin-top:4px} .why{font-size:13px;color:var(--muted);margin-top:2px}
+.tag{display:inline-block;background:var(--chip);color:var(--muted);border-radius:6px;padding:0 6px;font-size:11px;margin-right:4px}
+.controls{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+input,select{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:8px 10px;font:inherit}
+input[type=search]{flex:1;min-width:180px}
+.reasons li{color:var(--warn)}
+.brief{white-space:pre-wrap;font-size:13px;max-height:420px;overflow:auto}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:flex-start;justify-content:center;padding:40px 12px;z-index:9}
+.modal.on{display:flex} .modal .card{max-width:860px;width:100%;max-height:85vh;overflow:auto}
+.md h1,.md h2,.md h3{margin:.8em 0 .3em} .md table td,.md table th{border:1px solid var(--line)}
+code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:12px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="top">
+      <div class="logo"><span class="eye"></span>Argus</div>
+      <span id="health" class="pill">…</span>
+      <span class="spacer"></span>
+      <span class="muted small" id="updated"></span>
+    </div>
+    <nav id="tabs">
+      <button data-t="overview" class="on">Overview</button>
+      <button data-t="feed">Feed</button>
+      <button data-t="sources">Sources</button>
+      <button data-t="library">Library</button>
+      <button data-t="reports">Reports</button>
+      <button data-t="access">Access</button>
+      <button data-t="activity">Activity</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- OVERVIEW -->
+  <section id="t-overview" class="grid">
+    <div class="grid kpis" id="kpis"></div>
+    <div class="card hidden" id="reasons-card"><h3>Needs attention</h3><ul class="reasons" id="reasons"></ul></div>
+    <div class="grid two">
+      <div class="card"><h3>Harness health</h3><div class="tbl"><table id="units"></table></div></div>
+      <div class="card"><h3>Jobs</h3><div class="tbl"><table id="jobs"></table></div></div>
+    </div>
+    <div class="grid two">
+      <div class="card"><h3>Items fetched per hour (48h)</h3><div class="bars" id="hourly"></div>
+        <div class="muted small" id="hourly-note"></div></div>
+      <div class="card"><h3>Score distribution (7d)</h3><div id="scores"></div></div>
+    </div>
+    <div class="grid two">
+      <div class="card"><h3>🚨 Recent alerts</h3><div id="alerts"></div></div>
+      <div class="card"><h3>☀️ Last morning brief</h3><div class="brief" id="brief"></div></div>
+    </div>
+    <div class="grid two">
+      <div class="card"><h3>Top stories (24h)</h3><div id="top"></div></div>
+      <div class="card"><h3>Storage & backups</h3><div id="storage"></div></div>
+    </div>
+  </section>
+
+  <!-- FEED -->
+  <section id="t-feed" class="hidden">
+    <div class="controls">
+      <input type="search" id="fq" placeholder="Search every story (full-text)…">
+      <select id="fcat"><option value="">All categories</option><option>ai</option><option>finance</option>
+        <option>ai_finance</option><option>india</option><option>research</option></select>
+      <select id="fmin"><option value="-1">Newest first</option><option value="5">Score ≥ 5</option>
+        <option value="7">Score ≥ 7</option><option value="9">Score ≥ 9</option></select>
+    </div>
+    <div class="card"><div id="feed"></div></div>
+  </section>
+
+  <!-- SOURCES -->
+  <section id="t-sources" class="hidden">
+    <div class="card"><h3>Senses: every source Argus watches</h3><div class="tbl"><table id="sources"></table></div></div>
+  </section>
+
+  <!-- LIBRARY -->
+  <section id="t-library" class="hidden">
+    <div class="controls"><input type="search" id="pq" placeholder="Search papers: titles, abstracts, full text…"></div>
+    <div class="card"><div id="papers"></div></div>
+  </section>
+
+  <!-- REPORTS -->
+  <section id="t-reports" class="hidden"><div class="card"><h3>Research reports</h3><div id="reports"></div></div></section>
+
+  <!-- ACCESS -->
+  <section id="t-access" class="hidden grid two">
+    <div class="card"><h3>Guests</h3><div id="guests"></div></div>
+    <div class="card"><h3>Access requests</h3><div id="requests"></div></div>
+    <div class="card"><h3>Ignored senders (7d)</h3><div id="strangers"></div></div>
+  </section>
+
+  <!-- ACTIVITY -->
+  <section id="t-activity" class="hidden">
+    <div class="card"><h3>Job log</h3><div class="tbl"><table id="runs"></table></div></div>
+  </section>
+</main>
+
+<div class="modal" id="modal"><div class="card md" id="modal-body"></div></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const api = p => fetch(p).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+const IST = {timeZone: "Asia/Kolkata", hour12: false};
+function utc(ts){ if(!ts) return null; return new Date(ts.includes("T")||ts.includes("+") ? ts : ts.replace(" ","T")+"Z"); }
+function fmt(ts){ const d = utc(ts); return d && !isNaN(d) ? d.toLocaleString("en-IN", {...IST, day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit"}) : "–"; }
+function ago(ts){ const d = utc(ts); if(!d||isNaN(d)) return "–"; const m=(Date.now()-d)/6e4;
+  return m<1?"just now":m<60?`${Math.round(m)}m ago`:m<1440?`${Math.round(m/60)}h ago`:`${Math.round(m/1440)}d ago`; }
+function usec(v){ // systemd "Sat 2026-11-21 06:00:00 UTC"
+  if(!v || v==="n/a") return null; const m = v.match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/); return m ? m[1] : null; }
+function scoreCls(s){ return s>=9?"s9":s>=7?"s7":s>=5?"s5":""; }
+function itemHTML(i){
+  return `<div class="item"><div class="score ${scoreCls(i.score)}">${i.score ?? "·"}</div><div>
+    <div class="t"><a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.title)}</a></div>
+    <div class="meta"><span class="tag">${esc(i.category)}</span>${esc(i.source)} · ${ago(i.fetched_at)}${i.seen>1?` · seen in ${i.seen} outlets`:""}${i.alerted?" · 🚨 alerted":""}</div>
+    ${i.why?`<div class="why">${esc(i.why)}</div>`:""}${i.hook?`<div class="hook">🎬 ${esc(i.hook)}</div>`:""}</div></div>`;
+}
+
+let tab = "overview";
+document.querySelectorAll("#tabs button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#tabs button").forEach(x => x.classList.toggle("on", x===b));
+  document.querySelectorAll("main > section").forEach(s => s.classList.add("hidden"));
+  tab = b.dataset.t; $("#t-"+tab).classList.remove("hidden"); load();
+  try { localStorage.setItem("argus-tab", tab); } catch(e) {}
+});
+
+async function loadOverview(){
+  const o = await api("/api/overview"); const h = o.health, c = o.counts;
+  $("#health").className = "pill " + h.level; $("#health").textContent = {ok:"● all systems go", degraded:"● degraded", down:"● down"}[h.level];
+  const k = [["Items (24h)", c.items_24h], ["Waiting triage", c.pending], ["Alerts (24h / 7d)", `${c.alerts_24h} / ${c.alerts_7d}`],
+    ["Papers / read", `${c.papers} / ${c.papers_read}`], ["Reports", c.reports], ["Brain runs (24h)", `${o.brain.runs_24h} · ${Math.round(o.brain.seconds_24h/60)}m`],
+    ["Chats (24h)", o.brain.chats_24h], ["Your votes", `${c.votes} (${c.upvotes}👍)`]];
+  $("#kpis").innerHTML = k.map(([l,v]) => `<div class="card kpi"><div class="v">${esc(v)}</div><div class="l">${l}</div></div>`).join("");
+  $("#reasons-card").classList.toggle("hidden", !h.reasons.length);
+  $("#reasons").innerHTML = h.reasons.map(r => `<li>${esc(r)}</li>`).join("");
+  $("#units").innerHTML = `<tr><th>Unit</th><th>State</th><th>Last</th><th>Next</th></tr>` + h.units.map(u => {
+    const good = u.active==="active"; return `<tr><td><span class="dot ${good?"ok":"bad"}"></span>${esc(u.unit.replace("argus-",""))}</td>
+      <td>${esc(u.sub||u.active)}</td><td class="small">${usec(u.last)?fmt(usec(u.last)):(u.since&&u.unit.endsWith(".service")?"up since "+fmt(usec(u.since)):"–")}</td>
+      <td class="small">${usec(u.next)?fmt(usec(u.next)):"–"}</td></tr>`; }).join("");
+  $("#jobs").innerHTML = `<tr><th>Job</th><th>Last run</th><th>Result</th></tr>` + Object.entries(h.jobs).map(([j,v]) =>
+    `<tr><td><span class="dot ${v.ok===null?"":v.ok&&!v.late?"ok":v.late?"warn":"bad"}"></span>${j}</td><td class="small">${v.last?ago(v.last):"never"}</td>
+     <td class="small muted">${esc((v.info||"").slice(0,110))}</td></tr>`).join("");
+  const max = Math.max(1, ...o.hourly.map(x => x.n));
+  $("#hourly").innerHTML = o.hourly.map(x => `<div title="${fmt(x.h+":00Z")}: ${x.n}" style="height:${100*x.n/max}%"></div>`).join("");
+  $("#hourly-note").textContent = o.hourly.length ? `peak ${max}/h · first fetch shows the 36h backlog` : "no data yet";
+  const smax = Math.max(1, ...o.scores.map(x => x.n));
+  $("#scores").innerHTML = o.scores.slice().reverse().map(x => `<div class="hbar"><span class="k">${x.score}</span>
+    <div class="b" style="width:${Math.max(2, 85*x.n/smax)}%;background:${x.score>=9?"var(--bad)":x.score>=7?"var(--warn)":"var(--accent)"}"></div><span class="small muted">${x.n}</span></div>`).join("") || "<span class=muted>No triage yet</span>";
+  const lb = o.last_brief; $("#brief").innerHTML = lb ? `<div class="muted small">${fmt(lb.at)}</div>` + esc(lb.text.replace(/<[^>]*>/g,"")) :"<span class=muted>First brief arrives at 07:30 IST.</span>";
+  const s = o.health; $("#storage").innerHTML = `<table>
+    <tr><td>Database</td><td>${s.db_mb} MB</td></tr>
+    <tr><td>Disk free</td><td>${s.disk.free_gb} / ${s.disk.total_gb} GB</td></tr>
+    <tr><td>Backups kept</td><td>${o.backup_count} (latest ${o.backups[0]?esc(o.backups[0].name)+" · "+o.backups[0].kb+" KB":"none"})</td></tr>
+    <tr><td>Claude token age</td><td>${s.token_age_days ?? "?"} days (renew ~365)</td></tr>
+    <tr><td>Failures (24h)</td><td>${s.fails_24h}</td></tr></table>`;
+  const [al, top] = await Promise.all([api("/api/items?alerted=true&limit=6"), api("/api/items?min_score=6&limit=8")]);
+  $("#alerts").innerHTML = al.map(itemHTML).join("") || "<span class=muted>No alerts yet</span>";
+  $("#top").innerHTML = top.filter(i => (Date.now()-utc(i.fetched_at))<864e5).map(itemHTML).join("") || "<span class=muted>Nothing scored ≥6 in 24h</span>";
+  window._sources = o.sources;
+}
+
+async function loadFeed(){
+  const p = new URLSearchParams({q:$("#fq").value, category:$("#fcat").value, min_score:$("#fmin").value, limit:120});
+  const it = await api("/api/items?"+p); $("#feed").innerHTML = it.map(itemHTML).join("") || "<span class=muted>Nothing found</span>";
+}
+async function loadSources(){
+  if(!window._sources) await loadOverview().catch(()=>{});
+  const s = window._sources || [];
+  $("#sources").innerHTML = `<tr><th>Source</th><th>Type</th><th>Last fetch</th><th>New last run</th><th>Items 24h</th><th>Status</th></tr>` +
+    s.map(x => `<tr><td><span class="dot ${x.ok===undefined?"":x.ok?"ok":"bad"}"></span><a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.name)}</a></td>
+     <td><span class="tag">${esc(x.category)}</span><span class="tag">${esc(x.kind)}</span></td><td class="small">${x.at?ago(x.at):"–"}</td>
+     <td>${x.added ?? "–"}${x.papers?` <span class="muted small">(+${x.papers} papers)</span>`:""}</td><td>${x.items_24h}</td>
+     <td class="small ${x.ok===false?"":"muted"}" style="${x.ok===false?"color:var(--bad)":""}">${x.ok===false?esc(x.error)+` (${x.fails}× in a row)`:"ok"}</td></tr>`).join("");
+}
+async function loadLibrary(){
+  const ps = await api("/api/papers?limit=60&q="+encodeURIComponent($("#pq").value));
+  $("#papers").innerHTML = ps.map(p => `<div class="item"><div class="score ${p.read_at?"s7":""}" title="${p.read_at?"read":"seen"}">${p.read_at?"📖":"▲"+(p.upvotes||0)}</div><div>
+    <div class="t"><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.title||p.arxiv_id)}</a></div>
+    <div class="meta">${esc(p.arxiv_id)} · ${esc((p.authors||"").split(",").slice(0,3).join(","))}${(p.authors||"").split(",").length>3?" et al.":""} · ${esc(p.source)}${p.pages?` · ${p.pages} pages`:""}</div>
+    ${p.summary?`<div class="hook">🧠 ${esc(p.summary)}</div>`:""}</div></div>`).join("") || "<span class=muted>No papers</span>";
+}
+async function loadReports(){
+  const rs = await api("/api/reports");
+  $("#reports").innerHTML = rs.map(r => `<div class="item"><div class="score">📄</div><div><div class="t"><a href="#" data-r="${r.id}">${esc(r.topic)}</a></div>
+    <div class="meta">#${r.id} · ${fmt(r.created_at)} · ${r.papers} papers cited</div><div class="why">${esc(r.summary||"")}</div></div></div>`).join("") || "<span class=muted>No reports yet. Try /research in Telegram.</span>";
+  document.querySelectorAll("[data-r]").forEach(a => a.onclick = async e => { e.preventDefault();
+    const r = await api("/api/report/"+a.dataset.r).catch(() => ({markdown:"_Report file missing._"}));
+    $("#modal-body").innerHTML = marked.parse(r.markdown.replace(/</g,"&lt;")); $("#modal").classList.add("on"); });
+}
+async function loadAccess(){
+  const a = await api("/api/access");
+  $("#guests").innerHTML = (a.codeword_set?"":"<p style='color:var(--warn)'>No codeword set. Use /codeword in Telegram.</p>") +
+    (a.guests.length ? `<table><tr><th>Name</th><th>Chat id</th><th>Since</th><th>Msgs 7d</th></tr>${a.guests.map(g=>`<tr><td>${esc(g.name)} <span class=muted>@${esc(g.username)}</span></td><td><code>${g.chat_id}</code></td><td class=small>${fmt(g.added_at)}</td><td>${g.msgs_7d}</td></tr>`).join("")}</table>` : "<span class=muted>No guests. Only you can talk to Argus.</span>");
+  $("#requests").innerHTML = a.requests.length ? `<table><tr><th>Who</th><th>Chat id</th><th>When</th><th>Status</th></tr>${a.requests.map(r=>`<tr><td>${esc(r.name)} <span class=muted>@${esc(r.username||"")}</span></td><td><code>${r.chat_id}</code></td><td class=small>${fmt(r.at)}</td><td>${esc(r.status)}</td></tr>`).join("")}</table><p class="muted small">Approve or deny from Telegram (/guests).</p>` : "<span class=muted>No requests</span>";
+  $("#strangers").innerHTML = a.strangers_7d.length ? `<table><tr><th>Who</th><th>Chat id</th><th>Msgs</th><th>Last</th></tr>${a.strangers_7d.map(s=>`<tr><td>${esc(s.name)} <span class=muted>@${esc(s.username||"")}</span></td><td><code>${s.chat_id}</code></td><td>${s.n}</td><td class=small>${ago(s.last)}</td></tr>`).join("")}</table>` : "<span class=muted>Nobody else has messaged the bot.</span>";
+}
+async function loadActivity(){
+  const rs = await api("/api/runs?limit=120");
+  $("#runs").innerHTML = `<tr><th>When (IST)</th><th>Job</th><th></th><th>Details</th></tr>` + rs.map(r =>
+    `<tr><td class="small">${fmt(r.started)}</td><td>${esc(r.job)}</td><td><span class="dot ${r.ok?"ok":"bad"}"></span></td><td class="small muted">${esc(r.info)}</td></tr>`).join("");
+}
+const loaders = {overview:loadOverview, feed:loadFeed, sources:loadSources, library:loadLibrary, reports:loadReports, access:loadAccess, activity:loadActivity};
+async function load(){
+  try { await loaders[tab](); $("#updated").textContent = "updated " + new Date().toLocaleTimeString("en-IN", IST); }
+  catch(e){ $("#updated").textContent = "⚠ couldn't reach Argus (" + e.message + ")"; }
+}
+let deb; ["#fq","#pq"].forEach(s => $(s).addEventListener("input", () => { clearTimeout(deb); deb = setTimeout(load, 300); }));
+["#fcat","#fmin"].forEach(s => $(s).addEventListener("change", load));
+$("#modal").onclick = e => { if (e.target.id === "modal") $("#modal").classList.remove("on"); };
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("#modal").classList.remove("on"); });
+try { const t = localStorage.getItem("argus-tab"); if (t && loaders[t]) document.querySelector(`[data-t="${t}"]`).click(); else load(); } catch(e) { load(); }
+setInterval(() => { if (!document.hidden) load(); }, 60000);
+</script>
+</body>
+</html>

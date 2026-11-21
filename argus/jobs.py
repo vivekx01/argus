@@ -142,7 +142,12 @@ def fetch() -> str:
     now = dt.datetime.now(dt.timezone.utc)
     added = dupes = papers_seen = 0
     failed = []
+    try:
+        health = json.loads(kv_get(c, "source_status", "{}") or "{}")
+    except json.JSONDecodeError:
+        health = {}
     for name, cat, kind, url in SOURCES:
+        before = (added, papers_seen)
         try:
             for it in FETCHERS[kind](url):
                 if not it["url"] or not it["title"]:
@@ -168,9 +173,18 @@ def fetch() -> str:
                           (it["url"], it["title"], n, name, cat, it["published"], it["summary"]))
                 added += 1
             c.commit()
+            prev = health.get(name, {})
+            health[name] = {"category": cat, "ok": True, "added": added - before[0], "papers": papers_seen - before[1],
+                            "at": now.isoformat(timespec="seconds"), "last_ok": now.isoformat(timespec="seconds"),
+                            "fails": 0, "error": "", "total": prev.get("total", 0) + added - before[0]}
         except Exception as e:
             failed.append(f"{name}: {type(e).__name__}")
+            prev = health.get(name, {})
+            health[name] = {**prev, "category": cat, "ok": False, "added": 0, "at": now.isoformat(timespec="seconds"),
+                            "fails": prev.get("fails", 0) + 1, "error": f"{type(e).__name__}: {str(e)[:160]}"}
         time.sleep(1)  # be polite
+    known = {s[0] for s in SOURCES}
+    kv_set(c, "source_status", json.dumps({k: v for k, v in health.items() if k in known}))
     info = f"added={added} dupes={dupes} papers={papers_seen} failed={len(failed)} {failed}"
     log_run("fetch", True, info)
     return info
@@ -233,7 +247,8 @@ def triage(quiet: bool = False) -> str:
                f"<a href=\"{esc(r['url'])}\">Read source</a>")
         send(msg, buttons=[[{"text": "👍", "callback_data": f"up:{r['id']}"},
                             {"text": "👎", "callback_data": f"down:{r['id']}"},
-                            {"text": "🔎 Dig deeper", "callback_data": f"dig:{r['id']}"}]])
+                            {"text": "🔎 Dig deeper", "callback_data": f"dig:{r['id']}"}],
+                           [{"text": "🎬 Make a video", "callback_data": f"vid:{r['id']}"}]])
     info = f"triaged={len(rows)} returned={len(verdicts)} alerts={min(len(alerts), MAX_ALERTS_PER_RUN)} ({out['_seconds']}s)"
     log_run("triage", True, info)
     return info
@@ -254,7 +269,10 @@ def brief() -> str:
         return "empty"
     out = claude(prompt_file("brief", ITEMS=json.dumps([dict(r) for r in rows], ensure_ascii=False),
                              DATE=dt.date.today().strftime("%A, %d %B %Y")), timeout=1200)
-    send(out["result"].strip())
+    text = out["result"].strip()
+    send(text)
+    kv_set(c, "last_brief", json.dumps({"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+                                        "text": text}))
     info = f"items={len(rows)} ({out['_seconds']}s)"
     log_run("brief", True, info)
     return info
@@ -290,6 +308,23 @@ def research(topic: str) -> str:
     n = c.execute("SELECT COUNT(*) n FROM report_papers WHERE report_id=?", (rid,)).fetchone()["n"]
     log_run("research", True, f"#{rid} {topic}: {n} papers linked ({out['_seconds']}s)")
     return str(path)
+
+
+# ================================================================ video (brain + CC Studio MCP)
+def video(request: str) -> str:
+    """Make a Reel/Short with CC Studio. `request` is a topic, or 'item:<id>' for a story in the db."""
+    m = re.fullmatch(r"item:(\d+)", request.strip())
+    context = ""
+    if m:
+        r = db().execute("SELECT title, url, source, why, hook, summary FROM items WHERE id=?", (int(m.group(1)),)).fetchone()
+        if r:
+            context = json.dumps(dict(r), ensure_ascii=False)
+            request = r["title"]
+    out = claude(prompt_file("video", REQUEST=request, CONTEXT=context or "(none: research the topic yourself)"),
+                 timeout=3600)
+    send(out["result"].strip())
+    log_run("video", True, f"{request[:80]} ({out['_seconds']}s)")
+    return "ok"
 
 
 # ================================================================ backup (no AI)
@@ -340,7 +375,7 @@ def status() -> str:
 # ================================================================ cli
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("job", choices=["fetch", "triage", "brief", "weekly", "research", "status", "backup"])
+    ap.add_argument("job", choices=["fetch", "triage", "brief", "weekly", "research", "video", "status", "backup"])
     ap.add_argument("topic", nargs="*")
     ap.add_argument("--quiet", action="store_true", help="triage without sending alerts")
     a = ap.parse_args()
@@ -361,6 +396,8 @@ def main():
                     print(weekly())
                 elif a.job == "research":
                     print(research(" ".join(a.topic)))
+                elif a.job == "video":
+                    print(video(" ".join(a.topic)))
     except (ClaudeError, TimeoutError, ValueError) as e:
         log_run(a.job, False, str(e))
         print(f"{a.job} failed: {e}", file=sys.stderr)
