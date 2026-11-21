@@ -17,9 +17,10 @@ import subprocess
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 
-from .lib import DATA, HOME, ROOT, SECRETS, access_load, fts_query
+from .lib import DATA, HOME, ROOT, SECRETS, access_load, db, fts_query
 from .sources import SOURCES
 
+db().close()   # one writable open at startup applies schema migrations; every request after is read-only
 app = FastAPI(title="Argus", docs_url=None, redoc_url=None)
 STATIC = ROOT / "argus" / "static"
 UNITS = ["argus-bot.service", "argus-web.service", "argus-fetch.timer", "argus-triage.timer",
