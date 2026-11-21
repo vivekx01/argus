@@ -690,7 +690,9 @@ def extract_json(text: str):
     m = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
     if m:
         text = m.group(1)
-    for open_c, close_c in (("[", "]"), ("{", "}")):
+    # outermost first: an object ending in an array ({"fixes": [...]}) must not come back as the inner array
+    pairs = sorted((("[", "]"), ("{", "}")), key=lambda p: text.find(p[0]) if text.find(p[0]) != -1 else 1 << 30)
+    for open_c, close_c in pairs:
         a, b = text.find(open_c), text.rfind(close_c)
         if a != -1 and b > a:
             try:
