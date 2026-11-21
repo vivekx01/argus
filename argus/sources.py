@@ -29,9 +29,8 @@ SOURCES = [
     ("AI headlines", "ai", "rss", gnews("artificial intelligence breakthrough OR launch OR regulation")),
     # ---------------- AI: community signal
     ("Hacker News 200+", "ai", "rss", "https://hnrss.org/frontpage?points=200"),
-    ("r/MachineLearning", "ai", "rss", "https://www.reddit.com/r/MachineLearning/top/.rss?t=day"),
-    ("r/LocalLLaMA", "ai", "rss", "https://www.reddit.com/r/LocalLLaMA/top/.rss?t=day"),
-    ("r/singularity", "ai", "rss", "https://www.reddit.com/r/singularity/top/.rss?t=day"),
+    ("Hacker News AI 80+", "ai", "rss", "https://hnrss.org/newest?q=AI+OR+LLM+OR+GPT+OR+Claude+OR+Gemini&points=80"),
+    # Reddit blocks anonymous RSS (403/429) as of 2026-11. Re-add via the Reddit API with an app token if wanted.
     ("GitHub trending", "ai", "github_trending", "https://github.com/trending?since=daily"),
     # ---------------- Research
     ("HF Daily Papers", "research", "hf_daily", "https://huggingface.co/api/daily_papers?limit=50"),
@@ -58,7 +57,6 @@ SOURCES = [
     ("RBI", "india", "rss", "https://www.rbi.org.in/pressreleases_rss.xml"),
     ("SEBI", "india", "rss", "https://www.sebi.gov.in/sebirss.xml"),
     ("ET Markets", "india", "rss", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
-    ("Moneycontrol", "india", "rss", "https://www.moneycontrol.com/rss/latestnews.xml"),
     ("Mint Markets", "india", "rss", "https://www.livemint.com/rss/markets"),
     ("India markets headlines", "india", "rss", gnews("Sensex OR Nifty OR Indian startup funding", "IN")),
 ]
