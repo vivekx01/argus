@@ -22,8 +22,8 @@ import feedparser
 import httpx
 from bs4 import BeautifulSoup
 
-from .lib import (DATA, NOTES, REPORTS, ClaudeError, claude, db, esc, extract_json, kv_get, kv_set,
-                  log_run, norm_title, prompt_file, send, send_document, strip_tags)
+from .lib import (ARXIV_ID, DATA, HOME, NOTES, REPORTS, ClaudeError, claude, db, esc, extract_json, kv_get,
+                  kv_set, log_run, norm_title, prompt_file, send, send_document, strip_tags, upsert_paper)
 from .sources import SOURCES
 
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) ArgusResearchBot/1.0 (personal news reader)"}
@@ -67,26 +67,52 @@ def _rss(url: str):
     r = httpx.get(url, headers=UA, timeout=30, follow_redirects=True)
     r.raise_for_status()
     f = feedparser.parse(r.content)
-    for e in f.entries[:60]:
+    is_arxiv = "arxiv.org" in url
+    for e in f.entries[:1000 if is_arxiv else 60]:
         t = _entry_time(e)
-        yield {
+        summary = strip_tags(e.get("summary", ""))
+        it = {
             "url": e.get("link", ""),
             "title": strip_tags(e.get("title", "")),
-            "summary": strip_tags(e.get("summary", ""))[:500],
+            "summary": summary[:500],
             "published": t.isoformat() if t else "",
             "_t": t,
         }
+        m = ARXIV_ID.search(e.get("link", "") or e.get("id", ""))
+        if is_arxiv and m:
+            abstract = re.sub(r"^.*?Abstract:\s*", "", summary, flags=re.S)
+            it["_paper"] = {
+                "arxiv_id": m.group(1),
+                "title": it["title"],
+                "authors": e.get("author", "") or ", ".join(a.get("name", "") for a in e.get("authors", [])),
+                "published": it["published"],
+                "categories": ", ".join(tg.get("term", "") for tg in e.get("tags", [])),
+                "abstract": abstract,
+            }
+            it["summary"] = abstract[:500]
+            it["_library_only"] = True     # hundreds/day: library yes, news triage no (HF Daily Papers curates)
+        yield it
 
 
 def _hf_daily(url: str):
     for d in httpx.get(url, headers=UA, timeout=30).json():
         p = d.get("paper", {})
+        if not p.get("id"):
+            continue
         yield {
             "url": f"https://arxiv.org/abs/{p.get('id')}",
             "title": p.get("title", ""),
             "summary": f"[HF upvotes: {p.get('upvotes', 0)}] " + (p.get("summary") or "")[:450],
             "published": d.get("publishedAt", ""),
             "_t": None,
+            "_paper": {
+                "arxiv_id": p["id"],
+                "title": p.get("title", ""),
+                "authors": ", ".join(a.get("name", "") for a in p.get("authors", []) if a.get("name")),
+                "published": p.get("publishedAt", ""),
+                "abstract": p.get("summary", ""),
+                "upvotes": int(p.get("upvotes") or 0),
+            },
         }
 
 
@@ -114,13 +140,18 @@ FETCHERS = {"rss": _rss, "hf_daily": _hf_daily, "github_trending": _github_trend
 def fetch() -> str:
     c = db()
     now = dt.datetime.now(dt.timezone.utc)
-    added = dupes = 0
+    added = dupes = papers_seen = 0
     failed = []
     for name, cat, kind, url in SOURCES:
         try:
             for it in FETCHERS[kind](url):
                 if not it["url"] or not it["title"]:
                     continue
+                if it.get("_paper"):          # every paper we see goes into the library, even if old
+                    upsert_paper(c, {**it["_paper"], "source": name})
+                    papers_seen += 1
+                    if it.get("_library_only"):
+                        continue
                 if it["_t"] and (now - it["_t"]).total_seconds() > MAX_AGE_H * 3600:
                     continue
                 if c.execute("SELECT 1 FROM items WHERE url=?", (it["url"],)).fetchone():
@@ -140,7 +171,7 @@ def fetch() -> str:
         except Exception as e:
             failed.append(f"{name}: {type(e).__name__}")
         time.sleep(1)  # be polite
-    info = f"added={added} dupes={dupes} failed={len(failed)} {failed}"
+    info = f"added={added} dupes={dupes} papers={papers_seen} failed={len(failed)} {failed}"
     log_run("fetch", True, info)
     return info
 
@@ -246,12 +277,48 @@ def weekly() -> str:
 def research(topic: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", topic.lower()).strip("-")[:50] or "topic"
     path = REPORTS / f"{dt.date.today():%Y-%m-%d}-{slug}.md"
-    out = claude(prompt_file("research", TOPIC=topic, REPORT_PATH=str(path)), timeout=2400)
-    send(out["result"].strip())
+    c = db()
+    rid = c.execute("INSERT INTO reports(topic, path) VALUES(?,?)", (topic, str(path))).lastrowid
+    c.commit()
+    out = claude(prompt_file("research", TOPIC=topic, REPORT_PATH=str(path), REPORT_ID=rid), timeout=2400)
+    result = out["result"].strip()
+    c.execute("UPDATE reports SET summary=? WHERE id=?", (strip_tags(result)[:2000], rid))
+    c.commit()
+    send(result)
     if path.exists():
         send_document(path, caption=f"📄 Full report: {topic}")
-    log_run("research", True, f"{topic} ({out['_seconds']}s)")
+    n = c.execute("SELECT COUNT(*) n FROM report_papers WHERE report_id=?", (rid,)).fetchone()["n"]
+    log_run("research", True, f"#{rid} {topic}: {n} papers linked ({out['_seconds']}s)")
     return str(path)
+
+
+# ================================================================ backup (no AI)
+BACKUPS = HOME / "backups"
+KEEP_BACKUPS = 30
+
+
+def backup() -> str:
+    """Consistent snapshot of the db (sqlite online backup) + notes + reports, as one dated tarball."""
+    import sqlite3
+    import tarfile
+    BACKUPS.mkdir(exist_ok=True)
+    stamp = dt.datetime.now().strftime("%Y-%m-%d")
+    snap = BACKUPS / f".argus-{stamp}.db"
+    src, dst = db(), sqlite3.connect(snap)
+    src.backup(dst)
+    dst.close(); src.close()
+    tar = BACKUPS / f"argus-{stamp}.tar.gz"
+    with tarfile.open(tar, "w:gz") as t:
+        t.add(snap, "argus.db")
+        t.add(NOTES, "notes")
+        t.add(REPORTS, "reports")
+    snap.unlink()
+    old = sorted(BACKUPS.glob("argus-*.tar.gz"))[:-KEEP_BACKUPS]
+    for f in old:
+        f.unlink()
+    info = f"{tar.name} {tar.stat().st_size // 1024} KB, {len(list(BACKUPS.glob('argus-*.tar.gz')))} backups kept"
+    log_run("backup", True, info)
+    return info
 
 
 # ================================================================ status
@@ -261,7 +328,10 @@ def status() -> str:
     today = c.execute("SELECT COUNT(*) n FROM items WHERE fetched_at > datetime('now','-1 day')").fetchone()["n"]
     pending = c.execute("SELECT COUNT(*) n FROM items WHERE status='new'").fetchone()["n"]
     runs = c.execute("SELECT job, started, ok, info FROM runs ORDER BY id DESC LIMIT 8").fetchall()
-    lines = [f"📦 {total} items total, {today} in the last 24h, {pending} waiting for triage", ""]
+    p = c.execute("SELECT COUNT(*) n, SUM(fulltext IS NOT NULL) ft, SUM(read_at IS NOT NULL) rd FROM papers").fetchone()
+    nrep = c.execute("SELECT COUNT(*) n FROM reports").fetchone()["n"]
+    lines = [f"📦 {total} items total, {today} in the last 24h, {pending} waiting for triage",
+             f"📚 {p['n']} papers in library, {p['ft'] or 0} with full text, {p['rd'] or 0} read · {nrep} reports", ""]
     lines += [f"{'✅' if r['ok'] else '❌'} {r['job']} @ {r['started']} UTC: {r['info'][:120]}" for r in runs]
     return "\n".join(lines)
 
@@ -269,7 +339,7 @@ def status() -> str:
 # ================================================================ cli
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("job", choices=["fetch", "triage", "brief", "weekly", "research", "status"])
+    ap.add_argument("job", choices=["fetch", "triage", "brief", "weekly", "research", "status", "backup"])
     ap.add_argument("topic", nargs="*")
     ap.add_argument("--quiet", action="store_true", help="triage without sending alerts")
     a = ap.parse_args()
@@ -278,6 +348,8 @@ def main():
             print(fetch())
         elif a.job == "status":
             print(status())
+        elif a.job == "backup":
+            print(backup())
         else:
             with brain_lock():
                 if a.job == "triage":

@@ -21,7 +21,7 @@ for f in deploy/systemd/*; do
   ln -sf "$PWD/$f" ~/.config/systemd/user/"$(basename "$f")"
 done
 systemctl --user daemon-reload
-systemctl --user enable --now argus-fetch.timer argus-triage.timer argus-brief.timer argus-weekly.timer
+systemctl --user enable --now argus-fetch.timer argus-triage.timer argus-brief.timer argus-weekly.timer argus-backup.timer
 systemctl --user enable argus-bot.service
 systemctl --user restart argus-bot.service
 

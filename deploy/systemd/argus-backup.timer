@@ -1,0 +1,10 @@
+[Unit]
+Description=Argus nightly backup 03:30 IST (db snapshot + notes + reports, keep 30)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Kolkata
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

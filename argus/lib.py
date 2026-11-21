@@ -75,14 +75,100 @@ CREATE TABLE IF NOT EXISTS feedback(
 CREATE TABLE IF NOT EXISTS runs(
   id INTEGER PRIMARY KEY, job TEXT, started TEXT DEFAULT (datetime('now')), ok INTEGER, info TEXT);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
+
+-- research library ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS papers(
+  arxiv_id TEXT PRIMARY KEY,
+  title TEXT,
+  authors TEXT,                    -- comma-separated
+  published TEXT,
+  categories TEXT,                 -- comma-separated arXiv categories
+  abstract TEXT,
+  url TEXT,
+  upvotes INTEGER DEFAULT 0,       -- Hugging Face Daily Papers upvotes (max seen)
+  source TEXT,                     -- where we first saw it
+  first_seen TEXT DEFAULT (datetime('now')),
+  pdf_path TEXT,
+  pages INTEGER,
+  fulltext TEXT,                   -- pdftotext output, once downloaded
+  read_at TEXT,                    -- when Argus read it in full
+  summary TEXT                     -- Argus's takeaway after reading
+);
+CREATE TABLE IF NOT EXISTS reports(
+  id INTEGER PRIMARY KEY, topic TEXT, path TEXT, created_at TEXT DEFAULT (datetime('now')), summary TEXT);
+CREATE TABLE IF NOT EXISTS report_papers(
+  report_id INTEGER, arxiv_id TEXT, PRIMARY KEY(report_id, arxiv_id));
+
+-- full-text search (external-content FTS5, kept in sync by triggers) --------------
+CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
+  title, summary, why, hook, content='items', content_rowid='id');
+CREATE TRIGGER IF NOT EXISTS items_ai AFTER INSERT ON items BEGIN
+  INSERT INTO items_fts(rowid, title, summary, why, hook) VALUES (new.id, new.title, new.summary, new.why, new.hook);
+END;
+CREATE TRIGGER IF NOT EXISTS items_ad AFTER DELETE ON items BEGIN
+  INSERT INTO items_fts(items_fts, rowid, title, summary, why, hook)
+  VALUES ('delete', old.id, old.title, old.summary, old.why, old.hook);
+END;
+CREATE TRIGGER IF NOT EXISTS items_au AFTER UPDATE OF title, summary, why, hook ON items BEGIN
+  INSERT INTO items_fts(items_fts, rowid, title, summary, why, hook)
+  VALUES ('delete', old.id, old.title, old.summary, old.why, old.hook);
+  INSERT INTO items_fts(rowid, title, summary, why, hook) VALUES (new.id, new.title, new.summary, new.why, new.hook);
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS papers_fts USING fts5(
+  title, authors, abstract, fulltext, summary, content='papers', content_rowid='rowid');
+CREATE TRIGGER IF NOT EXISTS papers_ai AFTER INSERT ON papers BEGIN
+  INSERT INTO papers_fts(rowid, title, authors, abstract, fulltext, summary)
+  VALUES (new.rowid, new.title, new.authors, new.abstract, new.fulltext, new.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS papers_ad AFTER DELETE ON papers BEGIN
+  INSERT INTO papers_fts(papers_fts, rowid, title, authors, abstract, fulltext, summary)
+  VALUES ('delete', old.rowid, old.title, old.authors, old.abstract, old.fulltext, old.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS papers_au AFTER UPDATE OF title, authors, abstract, fulltext, summary ON papers BEGIN
+  INSERT INTO papers_fts(papers_fts, rowid, title, authors, abstract, fulltext, summary)
+  VALUES ('delete', old.rowid, old.title, old.authors, old.abstract, old.fulltext, old.summary);
+  INSERT INTO papers_fts(rowid, title, authors, abstract, fulltext, summary)
+  VALUES (new.rowid, new.title, new.authors, new.abstract, new.fulltext, new.summary);
+END;
 """
 
 
 def db() -> sqlite3.Connection:
     c = sqlite3.connect(DATA / "argus.db", timeout=30)
     c.row_factory = sqlite3.Row
+    had_fts = c.execute("SELECT 1 FROM sqlite_master WHERE name='items_fts'").fetchone()
     c.executescript(SCHEMA)
+    if not had_fts:  # first run after adding FTS: index the rows that already exist
+        c.execute("INSERT INTO items_fts(items_fts) VALUES('rebuild')")
+        c.execute("INSERT INTO papers_fts(papers_fts) VALUES('rebuild')")
+        c.commit()
     return c
+
+
+def fts_query(text: str) -> str:
+    """Turn free text into a safe FTS5 query: every word must appear (prefix-matched)."""
+    words = re.findall(r"\w+", text or "")
+    return " ".join(f'"{w}"*' for w in words) or '""'
+
+
+ARXIV_ID = re.compile(r"(\d{4}\.\d{4,5})")
+
+
+def upsert_paper(c: sqlite3.Connection, p: dict) -> None:
+    """Insert or refresh a paper's metadata. Never clobbers full text / reading notes."""
+    c.execute("""
+      INSERT INTO papers(arxiv_id, title, authors, published, categories, abstract, url, upvotes, source)
+      VALUES(:arxiv_id, :title, :authors, :published, :categories, :abstract, :url, :upvotes, :source)
+      ON CONFLICT(arxiv_id) DO UPDATE SET
+        title      = COALESCE(NULLIF(excluded.title, ''), papers.title),
+        authors    = COALESCE(NULLIF(excluded.authors, ''), papers.authors),
+        categories = COALESCE(NULLIF(excluded.categories, ''), papers.categories),
+        abstract   = CASE WHEN LENGTH(COALESCE(excluded.abstract, '')) > LENGTH(COALESCE(papers.abstract, ''))
+                          THEN excluded.abstract ELSE papers.abstract END,
+        upvotes    = MAX(COALESCE(papers.upvotes, 0), COALESCE(excluded.upvotes, 0))
+    """, {"title": "", "authors": "", "published": "", "categories": "", "abstract": "",
+          "upvotes": 0, "source": "", **p, "url": p.get("url") or f"https://arxiv.org/abs/{p['arxiv_id']}"})
 
 
 def kv_get(c: sqlite3.Connection, k: str, default: str | None = None) -> str | None:
