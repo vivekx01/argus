@@ -28,8 +28,8 @@ SOURCES = [
     ("Ars Technica AI", "ai", "rss", "https://arstechnica.com/ai/feed/"),
     ("AI headlines", "ai", "rss", gnews("artificial intelligence breakthrough OR launch OR regulation")),
     # ---------------- AI: community signal
-    ("Hacker News 200+", "ai", "rss", "https://hnrss.org/frontpage?points=200"),
-    ("Hacker News AI 80+", "ai", "rss", "https://hnrss.org/newest?q=AI+OR+LLM+OR+GPT+OR+Claude+OR+Gemini&points=80"),
+    ("Hacker News front page", "ai", "hn", "front"),      # official Algolia API; hnrss.org kept timing out
+    ("Hacker News AI 80+", "ai", "hn", "ai"),
     # Reddit blocks anonymous RSS (403/429) as of 2026-11. Re-add via the Reddit API with an app token if wanted.
     ("GitHub trending", "ai", "github_trending", "https://github.com/trending?since=daily"),
     # ---------------- Research

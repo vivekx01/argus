@@ -15,7 +15,7 @@ cd "$(dirname "$0")/.."
 CJ=~/.claude.json; [ -f "$CJ" ] || echo '{}' > "$CJ"
 jq --arg p "$PWD" '.projects[$p].hasTrustDialogAccepted = true' "$CJ" > "$CJ.tmp" && mv "$CJ.tmp" "$CJ"
 chmod 600 "$CJ"
-mkdir -p data/papers notes reports ~/.config/systemd/user
+mkdir -p data/papers data/downloads notes reports ~/.config/systemd/user
 
 # guest sandbox: outside the repo so no CLAUDE.md, settings, db or MCP config is visible to guest chats
 mkdir -p ~/argus-guest && cp deploy/guest-CLAUDE.md ~/argus-guest/CLAUDE.md

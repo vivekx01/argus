@@ -229,6 +229,18 @@ def report(rid: int):
     return JSONResponse({"markdown": p.read_text(errors="replace")})
 
 
+@app.get("/api/report/{rid}/pdf")
+def report_pdf(rid: int):
+    r = ro().execute("SELECT path FROM reports WHERE id=?", (rid,)).fetchone()
+    if not r:
+        raise HTTPException(404)
+    import pathlib
+    p = pathlib.Path(r["path"]).with_suffix(".pdf")
+    if not p.exists() or ROOT not in p.resolve().parents:
+        raise HTTPException(404, "no PDF for this report")
+    return FileResponse(p, media_type="application/pdf", filename=p.name)
+
+
 @app.get("/api/runs")
 def runs(limit: int = 80, job: str = ""):
     c = ro()

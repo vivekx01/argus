@@ -245,7 +245,7 @@ async function loadLibrary(){
 async function loadReports(){
   const rs = await api("/api/reports");
   $("#reports").innerHTML = rs.map(r => `<div class="item"><div class="score">📄</div><div><div class="t"><a href="#" data-r="${r.id}">${esc(r.topic)}</a></div>
-    <div class="meta">#${r.id} · ${fmt(r.created_at)} · ${r.papers} papers cited</div><div class="why">${esc(r.summary||"")}</div></div></div>`).join("") || "<span class=muted>No reports yet. Try /research in Telegram.</span>";
+    <div class="meta">#${r.id} · ${fmt(r.created_at)} · ${r.papers} papers cited · <a href="/api/report/${r.id}/pdf" target="_blank">PDF</a></div><div class="why">${esc(r.summary||"")}</div></div></div>`).join("") || "<span class=muted>No reports yet. Try /research in Telegram.</span>";
   document.querySelectorAll("[data-r]").forEach(a => a.onclick = async e => { e.preventDefault();
     const r = await api("/api/report/"+a.dataset.r).catch(() => ({markdown:"_Report file missing._"}));
     $("#modal-body").innerHTML = marked.parse(r.markdown.replace(/</g,"&lt;")); $("#modal").classList.add("on"); });

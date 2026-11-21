@@ -125,6 +125,12 @@ CREATE TABLE IF NOT EXISTS inbox(
   kind TEXT,                       -- owner | guest | stranger | codeword
   at TEXT DEFAULT (datetime('now')));
 CREATE INDEX IF NOT EXISTS i_inbox_chat ON inbox(chat_id, at);
+-- everything Argus sends to Telegram, so chat turns know what alerts/briefs/reports the owner has seen
+CREATE TABLE IF NOT EXISTS outbox(
+  id INTEGER PRIMARY KEY, chat_id INTEGER, kind TEXT, item_id INTEGER, text TEXT,
+  tg_message_id INTEGER, at TEXT DEFAULT (datetime('now')));
+CREATE INDEX IF NOT EXISTS i_outbox_at ON outbox(at);
+CREATE INDEX IF NOT EXISTS i_outbox_msg ON outbox(tg_message_id);
 CREATE TABLE IF NOT EXISTS access_requests(
   chat_id INTEGER PRIMARY KEY, username TEXT, name TEXT, at TEXT DEFAULT (datetime('now')),
   status TEXT DEFAULT 'pending');  -- pending | approved | denied | revoked
@@ -192,6 +198,10 @@ def db() -> sqlite3.Connection:
     c.row_factory = sqlite3.Row
     had_fts = c.execute("SELECT 1 FROM sqlite_master WHERE name='items_fts'").fetchone()
     c.executescript(SCHEMA)
+    cols = {r[1] for r in c.execute("PRAGMA table_info(items)")}
+    if "real_url" not in cols:   # publisher URL behind a Google News redirect, resolved lazily
+        c.execute("ALTER TABLE items ADD COLUMN real_url TEXT")
+        c.commit()
     if not had_fts:  # first run after adding FTS: index the rows that already exist
         c.execute("INSERT INTO items_fts(items_fts) VALUES('rebuild')")
         c.execute("INSERT INTO papers_fts(papers_fts) VALUES('rebuild')")
@@ -281,10 +291,16 @@ def _chunks(text: str, n: int = TG_LIMIT) -> list[str]:
     return parts or [""]
 
 
-def send(text: str, buttons: list | None = None, html_mode: bool = True, chat_id: int | None = None) -> None:
-    """Send to the owner. Falls back to plain text if Telegram rejects the HTML."""
+def send(text: str, buttons: list | None = None, html_mode: bool = True, chat_id: int | None = None,
+         kind: str = "message", item_id: int | None = None) -> int | None:
+    """Send to the owner (or a chat). Falls back to plain text if Telegram rejects the HTML.
+
+    Everything sent is recorded in `outbox`, so later chat turns know what the owner has seen.
+    Returns the Telegram message id of the last part.
+    """
     chat_id = chat_id or OWNER
     parts = _chunks(text)
+    mid = None
     for i, part in enumerate(parts):
         kw = {"chat_id": chat_id, "text": part, "disable_web_page_preview": True}
         if html_mode:
@@ -295,14 +311,196 @@ def send(text: str, buttons: list | None = None, html_mode: bool = True, chat_id
         if not r.get("ok") and html_mode:
             kw.pop("parse_mode", None)
             kw["text"] = strip_tags(part)
-            tg("sendMessage", **kw)
+            r = tg("sendMessage", **kw)
+        mid = (r.get("result") or {}).get("message_id", mid)
+    record_outbox(chat_id, kind, text, mid, item_id)
+    return mid
 
 
-def send_document(path: pathlib.Path, caption: str = "") -> None:
+def record_outbox(chat_id: int, kind: str, text: str, tg_message_id: int | None = None,
+                  item_id: int | None = None) -> None:
+    try:
+        c = db()
+        c.execute("INSERT INTO outbox(chat_id, kind, item_id, text, tg_message_id) VALUES(?,?,?,?,?)",
+                  (chat_id, kind, item_id, strip_tags(text)[:4000], tg_message_id))
+        c.commit()
+    except Exception:
+        pass
+
+
+def send_document(path: pathlib.Path, caption: str = "", chat_id: int | None = None, kind: str = "document") -> None:
     with open(path, "rb") as f:
-        httpx.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendDocument",
-                   data={"chat_id": OWNER, "caption": caption[:1000]},
-                   files={"document": (path.name, f)}, timeout=120)
+        r = httpx.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendDocument",
+                       data={"chat_id": chat_id or OWNER, "caption": caption[:1000]},
+                       files={"document": (path.name, f)}, timeout=180)
+    try:
+        mid = r.json().get("result", {}).get("message_id")
+    except Exception:
+        mid = None
+    record_outbox(chat_id or OWNER, kind, f"[file {path.name}] {caption}", mid)
+
+
+# ---------------------------------------------------------------- live progress in Telegram
+def _short(s: str, n: int = 70) -> str:
+    s = " ".join(str(s or "").split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def describe_tool(name: str, inp: dict) -> str:
+    """Human label for a tool call, shown in the live status message."""
+    from urllib.parse import urlparse
+    inp = inp or {}
+    if name == "WebSearch":
+        return f"🔎 searching: {_short(inp.get('query'), 60)}"
+    if name == "WebFetch":
+        return f"📄 reading {urlparse(inp.get('url', '')).netloc or 'a page'}"
+    if name == "Read":
+        return f"📖 reading {pathlib.Path(inp.get('file_path', '')).name}"
+    if name in ("Write", "Edit"):
+        return f"✍️ writing {pathlib.Path(inp.get('file_path', '')).name}"
+    if name == "Bash":
+        cmd = inp.get("command", "")
+        if "argus.library get" in cmd:
+            m = ARXIV_ID.search(cmd)
+            return f"📚 fetching paper {m.group(1) if m else ''} into the library"
+        if "argus.library search" in cmd:
+            return "🗂 checking what I already know"
+        if "argus.library done" in cmd:
+            return "🧠 saving paper takeaway"
+        if "argus.library link" in cmd:
+            return "🔗 citing papers in the report"
+        if "sqlite3" in cmd:
+            return "🗃 querying my database"
+        if "pdftotext" in cmd:
+            return "📑 extracting PDF text"
+        if "curl" in cmd:
+            return "⬇️ downloading"
+        return f"⚙️ {_short(inp.get('description') or cmd, 60)}"
+    if name.startswith("mcp__ccstudio__"):
+        tool = name.split("__")[-1]
+        return {"validate_script": "✅ validating the script", "preview_video": "🖼 previewing the layout",
+                "render_video": "🎞 rendering the video", "get_job": "⏳ checking render progress",
+                "export_video": "📦 exporting files", "get_outputs": "📋 collecting title & description",
+                "list_voices": "🎙 picking a voice"}.get(tool, f"🎬 studio: {tool}")
+    if name == "ToolSearch":
+        return "🧰 loading tools"
+    return f"⚙️ {name}"
+
+
+class Progress:
+    """One Telegram status message, edited in place while a long task runs.
+
+    It appears only once the task has run a few seconds (quick replies stay quiet),
+    edits at most every few seconds, keeps the typing indicator alive, and ends with ✅/⚠️.
+    """
+
+    def __init__(self, title: str, chat_id: int | None = None, show_after: float = 6.0):
+        import threading
+        self.title, self.chat_id, self.show_after = title, chat_id or OWNER, show_after
+        self.lines: list[str] = []
+        self.current = ""
+        self.mid = None
+        self.t0 = time.time()
+        self._last_edit = 0.0
+        self._dirty = True
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._tick, daemon=True)
+        self._thread.start()
+
+    def _render(self, final: str | None = None) -> str:
+        secs = int(time.time() - self.t0)
+        head = final or f"{self.title} ({secs // 60}m {secs % 60:02d}s)"
+        body = [f"✓ {esc(l)}" for l in self.lines[-7:]]
+        if self.current and not final:
+            body.append(f"▸ <b>{esc(self.current)}</b>")
+        return head + ("\n" + "\n".join(body) if body else "")
+
+    def _flush(self, force: bool = False, final: str | None = None) -> None:
+        if time.time() - self.t0 < self.show_after and not final:
+            return
+        if not force and time.time() - self._last_edit < 4:
+            return
+        text = self._render(final)
+        if self.mid is None:
+            if final and time.time() - self.t0 < self.show_after:
+                return                          # finished quickly: no status message at all
+            r = tg("sendMessage", chat_id=self.chat_id, text=text, parse_mode="HTML", disable_notification=True)
+            self.mid = (r.get("result") or {}).get("message_id")
+        else:
+            tg("editMessageText", chat_id=self.chat_id, message_id=self.mid, text=text, parse_mode="HTML")
+        self._last_edit = time.time()
+        self._dirty = False
+
+    def _tick(self) -> None:
+        n = 0
+        while not self._stop.wait(2):
+            n += 1
+            if n % 2 == 0:
+                tg("sendChatAction", chat_id=self.chat_id, action="typing")
+            with self._lock:
+                if self._dirty or n % 7 == 0:   # refresh the clock every ~15s even when idle
+                    self._flush()
+
+    def step(self, label: str) -> None:
+        with self._lock:
+            if self.current and self.current != label:
+                self.lines.append(self.current)
+            self.current = label
+            self._dirty = True
+
+    def note(self, text: str) -> None:
+        self.step(f"💭 {_short(text, 90)}")
+
+    def done(self, ok: bool = True, msg: str = "") -> None:
+        self._stop.set()
+        with self._lock:
+            if self.current:
+                self.lines.append(self.current); self.current = ""
+            secs = int(time.time() - self.t0)
+            final = (f"✅ Done in {secs // 60}m {secs % 60:02d}s" if ok else f"⚠️ Stopped after {secs // 60}m {secs % 60:02d}s") \
+                + (f": {esc(msg)}" if msg else "")
+            self._flush(force=True, final=final)
+
+
+# ---------------------------------------------------------------- reports as phone-friendly PDFs
+REPORT_CSS = """
+@page { size: 120mm 210mm; margin: 9mm 8mm 11mm; }
+body { font: 10.5pt/1.5 -apple-system, "Segoe UI", Roboto, "Noto Sans", sans-serif; color: #15181f; }
+h1 { font-size: 17pt; line-height: 1.2; margin: 0 0 4mm; color: #0b1640; }
+h2 { font-size: 12.5pt; margin: 6mm 0 2mm; padding-bottom: 1mm; border-bottom: 1px solid #dfe3ec; color: #1a2a66; }
+h3 { font-size: 11pt; margin: 4mm 0 1mm; }
+p, li { orphans: 2; widows: 2; } ul, ol { padding-left: 5mm; } li { margin: 1mm 0; }
+a { color: #2848d6; text-decoration: none; word-break: break-all; }
+code { font-size: 9pt; background: #f1f3f8; padding: 0 2px; border-radius: 2px; }
+pre { font-size: 8.5pt; background: #f1f3f8; padding: 2mm; white-space: pre-wrap; }
+table { border-collapse: collapse; width: 100%; font-size: 9pt; margin: 2mm 0; }
+th, td { border: 1px solid #dfe3ec; padding: 1mm 1.5mm; text-align: left; vertical-align: top; }
+th { background: #f1f3f8; }
+blockquote { margin: 2mm 0; padding: 1mm 3mm; border-left: 3px solid #7c9cff; color: #444; }
+.brand { font-size: 8pt; color: #7a8299; margin-bottom: 3mm; letter-spacing: .3px; }
+"""
+
+
+def markdown_to_pdf(md_path: pathlib.Path, title: str = "") -> pathlib.Path:
+    """Render a Markdown report to a phone-sized PDF using the local headless Chromium."""
+    import markdown as md
+    from playwright.sync_api import sync_playwright
+    body = md.markdown(md_path.read_text(errors="replace"), extensions=["tables", "fenced_code", "sane_lists"])
+    page_html = (f"<!doctype html><html><head><meta charset='utf-8'><title>{esc(title)}</title>"
+                 f"<style>{REPORT_CSS}</style></head><body><div class='brand'>👁 ARGUS RESEARCH · "
+                 f"{time.strftime('%d %b %Y')}</div>{body}</body></html>")
+    pdf = md_path.with_suffix(".pdf")
+    with sync_playwright() as p:
+        b = p.chromium.launch()
+        pg = b.new_page()
+        pg.set_content(page_html, wait_until="load")
+        pg.pdf(path=str(pdf), prefer_css_page_size=True, print_background=True,
+               display_header_footer=True, header_template="<span></span>",
+               footer_template="<div style='font-size:7pt;color:#999;width:100%;text-align:center'>"
+                               "<span class='pageNumber'></span> / <span class='totalPages'></span></div>")
+        b.close()
+    return pdf
 
 
 # ---------------------------------------------------------------- claude
@@ -324,32 +522,65 @@ GUEST_TOOLS = ["--allowedTools", "WebSearch,WebFetch",
                "--disallowedTools", "Bash,Read,Write,Edit,Glob,Grep,NotebookEdit,Task,Agent"]
 
 
-def claude(prompt: str, timeout: int = 900, resume: str | None = None, guest: bool = False) -> dict:
-    """Run one headless Claude Code turn.
+def claude(prompt: str, timeout: int = 900, resume: str | None = None, guest: bool = False,
+           progress: "Progress | None" = None, disallow: list[str] | None = None) -> dict:
+    """Run one headless Claude Code turn, streaming events so progress can be shown live.
 
     Owner mode runs in the repo dir (CLAUDE.md, .claude/settings.json, .mcp.json apply).
     Guest mode runs in ~/argus-guest with web tools only and no secrets, db, notes or MCP.
-    Returns the parsed JSON envelope: {result, session_id, is_error, ...}.
+    `disallow` removes extra tools for this turn (e.g. rendering from chat).
+    Returns the final envelope: {result, session_id, is_error, ...} plus _seconds and _tools.
     """
-    cmd = [str(CLAUDE_BIN), "-p", prompt, "--output-format", "json"]
+    import tempfile
+    cmd = [str(CLAUDE_BIN), "-p", prompt, "--output-format", "stream-json", "--verbose"]
     if guest:
         cmd += GUEST_TOOLS
+    if disallow:
+        cmd += ["--disallowedTools", ",".join(disallow)]
     if resume:
         cmd += ["--resume", resume]
     t0 = time.time()
-    try:
-        p = subprocess.run(cmd, cwd=GUEST_DIR if guest else ROOT, capture_output=True, text=True,
-                           timeout=timeout, env=_claude_env(guest))
-    except subprocess.TimeoutExpired:
-        raise ClaudeError(f"timed out after {timeout}s")
-    try:
-        out = json.loads(p.stdout)
-    except json.JSONDecodeError:
-        raise ClaudeError((p.stdout + p.stderr)[-1500:] or f"exit {p.returncode}")
-    out["_seconds"] = round(time.time() - t0)
-    if out.get("is_error"):
-        raise ClaudeError(str(out.get("result", ""))[:1500])
-    return out
+    final: dict | None = None
+    tools_used: list[str] = []
+    pending_text = ""
+    with tempfile.TemporaryFile(mode="w+") as errf:
+        p = subprocess.Popen(cmd, cwd=GUEST_DIR if guest else ROOT, stdout=subprocess.PIPE, stderr=errf,
+                             text=True, env=_claude_env(guest), bufsize=1)
+        import threading
+        killer = threading.Timer(timeout, p.kill)
+        killer.start()
+        try:
+            for line in p.stdout:
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("type") == "assistant":
+                    for b in (ev.get("message") or {}).get("content") or []:
+                        if b.get("type") == "text" and b.get("text", "").strip():
+                            pending_text = b["text"]            # may be the final answer; shown only if work follows
+                        elif b.get("type") == "tool_use":
+                            tools_used.append(b.get("name", ""))
+                            if progress:
+                                if pending_text:
+                                    progress.note(pending_text)
+                                progress.step(describe_tool(b.get("name", ""), b.get("input") or {}))
+                            pending_text = ""
+                elif ev.get("type") == "result":
+                    final = ev
+            p.wait()
+        finally:
+            killer.cancel()
+        if final is None:
+            errf.seek(0)
+            if time.time() - t0 >= timeout - 1:
+                raise ClaudeError(f"timed out after {timeout}s")
+            raise ClaudeError(errf.read()[-1500:] or f"exit {p.returncode}")
+    final["_seconds"] = round(time.time() - t0)
+    final["_tools"] = tools_used
+    if final.get("is_error"):
+        raise ClaudeError(str(final.get("result", ""))[:1500])
+    return final
 
 
 def extract_json(text: str):

@@ -8,3 +8,4 @@ arxiv>=2.1
 pypdf>=4.0
 fastapi>=0.110
 uvicorn>=0.29
+markdown>=3.5
