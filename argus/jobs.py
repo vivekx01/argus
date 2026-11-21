@@ -173,6 +173,8 @@ FETCHERS = {"rss": _rss, "hf_daily": _hf_daily, "github_trending": _github_trend
 
 # ================================================================ real article links
 def resolve_links(item_ids: list[int], limit: int = 15) -> None:
+    if not item_ids:
+        return
     """Google News links are JS redirects. Open them in the local headless browser, like a reader clicking,
     and store the publisher URL in items.real_url. Only used for the few items we actually show the owner."""
     c = db()
@@ -205,6 +207,11 @@ def link_of(row) -> str:
         return row["real_url"] or row["url"]
     except (IndexError, KeyError):
         return row["url"]
+
+
+def triage_model() -> str:
+    """Model for triage runs. Haiku by default (cheap, 6x/day); change with kv triage_model."""
+    return kv_get(db(), "triage_model", "haiku") or "haiku"
 
 
 def channel_active() -> bool:
@@ -298,7 +305,7 @@ def triage(quiet: bool = False) -> str:
         RECENT_ALERTS="\n".join(f"- {r['title']}" for r in recent_alerts) or "(none)",
         NOW=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     )
-    out = claude(prompt, timeout=1200)
+    out = claude(prompt, timeout=1200, agent="triager", model=triage_model(), label="triage")
     verdicts = extract_json(out["result"])
     by_id = {r["id"]: r for r in rows}
     alerts = []
@@ -317,7 +324,7 @@ def triage(quiet: bool = False) -> str:
 
     alerts.sort(key=lambda v: -int(v.get("score", 0)))
     try:
-        resolve_links([v["id"] for v in alerts[:MAX_ALERTS_PER_RUN]])
+        resolve_links([v["id"] for v in verdicts if int(v.get("score", 0)) >= 6 and v.get("id") in by_id], limit=25)
     except Exception as e:
         log_run("links", False, str(e)[:300])
     fresh = {r["id"]: r for r in c.execute(f"SELECT * FROM items WHERE id IN ({','.join(str(i) for i in by_id)})")}
@@ -363,9 +370,10 @@ def brief() -> str:
     items = []
     for r in c.execute(f"SELECT id, title, source, category, url, real_url, score, why, hook, seen, cluster FROM items "
                        f"WHERE id IN ({','.join(str(r['id']) for r in rows)}) ORDER BY score DESC, seen DESC"):
-        d = dict(r); d["url"] = link_of(r); d.pop("real_url", None); items.append(d)
+        d = dict(r); d.pop("url", None); d.pop("real_url", None); items.append(d)   # links via link:ID
     out = claude(prompt_file("brief", ITEMS=json.dumps(items, ensure_ascii=False),
-                             DATE=dt.date.today().strftime("%A, %d %B %Y")), timeout=1200, progress=_live("☀️ Writing the brief…"))
+                             DATE=dt.date.today().strftime("%A, %d %B %Y")), timeout=1200, progress=_live("☀️ Writing the brief…"),
+                 agent="digest-editor", label="brief")
     text = out["result"].strip()
     _live_done()
     send(text, kind="brief")
@@ -385,7 +393,7 @@ def weekly() -> str:
                         WHERE watch_id=1 AND status='triaged' AND score >= 6 AND fetched_at > datetime('now','-7 days')
                         ORDER BY score DESC LIMIT 120""").fetchall()
     out = claude(prompt_file("weekly", ITEMS=json.dumps([dict(r) for r in rows], ensure_ascii=False),
-                             TASTE=_taste_context(c)), timeout=1800, progress=_live("📈 Weekly review…"))
+                             TASTE=_taste_context(c)), timeout=1800, progress=_live("📈 Weekly review…"), label="weekly")
     _live_done()
     send(out["result"].strip(), kind="weekly")
     log_run("weekly", True, f"items={len(rows)} ({out['_seconds']}s)")
@@ -401,14 +409,15 @@ def research(topic: str) -> str:
     c.commit()
     prog = _live(f"🔎 Researching: {topic[:60]}…")
     out = claude(prompt_file("research", TOPIC=topic, REPORT_PATH=str(path), REPORT_ID=rid), timeout=2700,
-                 progress=prog)
+                 progress=prog, agent="researcher", label="research")
     # quality gate: a deep dive needs a real report with real sources; one push back if it's thin
     problems = _report_problems(path, out)
     if problems:
         if prog: prog.step("🧐 report too thin, going deeper")
         out = claude(f"Your research report on '{topic}' isn't finished: {problems}. Keep researching: read the "
                      f"primary sources in full, then rewrite {path} so it's complete. Your final reply is the "
-                     "Telegram summary again.", timeout=2400, resume=out.get("session_id"), progress=prog)
+                     "Telegram summary again.", timeout=2400, resume=out.get("session_id"), progress=prog,
+                     agent="researcher", label="research")
         problems = _report_problems(path, out)
     result = out["result"].strip()
     c.execute("UPDATE reports SET summary=? WHERE id=?", (strip_tags(result)[:2000], rid))
@@ -480,7 +489,7 @@ def video(request: str) -> str:
             request = r["title"]
     prog = _live(f"🎬 Making a video: {request[:60]}…")
     out = claude(prompt_file("video", REQUEST=request, CONTEXT=context or "(none: research the topic yourself)"),
-                 timeout=3600, progress=prog)
+                 timeout=3600, progress=prog, agent="video-producer", label="video")
     _live_done(True, "video ready")
     send(out["result"].strip(), kind="video")
     rendered = "mcp__ccstudio__render_video" in out.get("_tools", [])
@@ -537,7 +546,7 @@ def status() -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("job", choices=["fetch", "triage", "brief", "weekly", "research", "video", "status", "backup",
-                                    "watchdigest"])
+                                    "watchdigest", "daily", "dailyrender"])
     ap.add_argument("topic", nargs="*")
     ap.add_argument("--quiet", action="store_true", help="triage without sending alerts")
     ap.add_argument("--live", action="store_true", help="show a live progress message in Telegram")
@@ -558,6 +567,23 @@ def main():
                     if channel_active():
                         print(triage(quiet=a.quiet))
                     print(triage_watches(quiet=a.quiet))
+                elif a.job == "daily":
+                    from . import daily
+                    for series in (a.topic or ["ai", "finance"]):          # one after the other
+                        prog = Progress(f"{daily.SERIES[series]['emoji']} Drafting {daily.SERIES[series]['name']}…") if LIVE else None
+                        try:
+                            print(series, daily.draft(series, progress=prog))
+                            if prog: prog.done(True)
+                        except Exception as e:
+                            if prog: prog.done(False, str(e)[:100])
+                            log_run("daily", False, f"{series}: {e}"[:300])
+                            send(f"⚠️ {daily.SERIES[series]['name']} draft failed: {esc(str(e)[:300])}")
+                elif a.job == "dailyrender":
+                    from . import daily
+                    date, series = a.topic[0], a.topic[1]
+                    prog = _live(f"🎞 Rendering {daily.SERIES[series]['name']}…")
+                    print(daily.render(date, series, progress=prog))
+                    _live_done(True)
                 elif a.job == "watchdigest":
                     from .watches import digest_watches
                     only = int(a.topic[0]) if a.topic and a.topic[0].isdigit() else None

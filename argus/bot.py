@@ -48,6 +48,7 @@ Just talk to me, or:
 /video &lt;topic&gt;: make a Reel/Short with CC Studio
 /scan: triage new items now · /brief: today's brief now
 /status: what I've been doing · /new: fresh conversation
+/daily [ai|finance]: draft today's daily video(s) now (you approve before render)
 /watches: what I keep an eye on (pause, digest now, remove)
 /guests: who has access, pending requests · /codeword &lt;word&gt;: set the access codeword
 
@@ -175,6 +176,12 @@ async def _apply_watch(spec: dict) -> None:
     await asyncio.to_thread(send, report, None, True, OWNER, "watch_setup")
 
 
+async def cmd_daily(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    series = [s for s in ctx.args if s in ("ai", "finance")] or ["ai", "finance"]
+    await update.message.reply_text(f"🎬 Drafting {' + '.join(series)} daily now (draft → fact-check → you approve).")
+    asyncio.create_task(run_job("daily", *series))
+
+
 async def cmd_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     kv_set(db(), "chat_meta", "{}")
     await update.message.reply_text("🧹 Fresh conversation started.")
@@ -234,6 +241,12 @@ Action rules:
   include "id" (and "replace_sources": true to swap its sources); to add sources to the channel watch use "id": 1.)
 - You can't change who has access. If the owner asks to remove a guest (or you think one should go), find their chat id
   in the inbox/access_requests tables and end with: [[PROPOSE_REVOKE: <chat_id> | <short reason>]]. The owner confirms.
+- Links to stories in the database: write <a href="link:ID">Outlet</a> with the item id; code inserts the real URL.
+  Never copy or retype long URLs (Google News links break). Query items with COALESCE(real_url, url) if you need to see it.
+- Specialists you can delegate to with the Agent tool: researcher (focused investigation), fact-checker (verify numbers
+  and claims before you state them as fact), source-scout (design a new watch: returns the spec you then propose),
+  digest-editor, video-producer (drafting only in chat; rendering needs the owner's tap). Delegate when it improves
+  quality; answer simple things yourself.
 - Papers: fetch arXiv papers with `~/venv/bin/python -m argus.library get <id>`, never into reports/. Other downloads
   go in data/downloads/."""
 
@@ -299,7 +312,9 @@ def _chat_turn(text: str, chat_id: int, guest: bool, update_msg=None) -> str:
         if (time.time() - meta.get("last_ts", 0) > SESSION_IDLE_H * 3600) or meta.get("turns", 0) >= SESSION_MAX_TURNS:
             meta = {"last_outbox": meta.get("last_outbox", 0)}           # fresh session
         context = _owner_context(c, meta, update_msg)
-        prompt = (f"{context}\n\n" if context else "") + f"[Telegram message from the owner]\n{text}\n\n{OWNER_RULES}"
+        now = dt.datetime.now(dt.timezone(dt.timedelta(hours=5, minutes=30))).strftime("%a %d %b %Y, %H:%M IST")
+        prompt = (f"[Now: {now}]\n" + (f"{context}\n\n" if context else "")
+                  + f"[Telegram message from the owner]\n{text}\n\n{OWNER_RULES}")
         with brain_lock(wait_s=900):
             try:
                 out = claude(prompt, timeout=1500, resume=meta.get("sid"), progress=prog, disallow=CHAT_DISALLOW)
@@ -504,6 +519,18 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.answer()
         return
 
+    if parts[0] == "daily" and len(parts) == 4:
+        _, date, series, yn = parts
+        await q.edit_message_reply_markup(reply_markup=None)
+        if yn == "yes":
+            await q.answer("Rendering 🎞")
+            asyncio.create_task(run_job("dailyrender", date, series))
+        else:
+            from .daily import skip
+            skip(date, series)
+            await q.answer("Skipped ✋")
+        return
+
     if parts[0] == "noop":
         await q.answer("Okay 👌")
         await q.edit_message_reply_markup(reply_markup=None)
@@ -556,7 +583,7 @@ def main():
     app.add_handler(CommandHandler(["start", "help"], on_start))
     for name, fn in [("status", cmd_status), ("scan", cmd_scan), ("brief", cmd_brief), ("research", cmd_research),
                      ("video", cmd_video), ("new", cmd_new), ("codeword", cmd_codeword), ("guests", cmd_guests),
-                     ("watches", cmd_watches)]:
+                     ("watches", cmd_watches), ("daily", cmd_daily)]:
         app.add_handler(CommandHandler(name, fn, filters=ONLY_OWNER))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, on_text))
     app.add_handler(CallbackQueryHandler(on_button))

@@ -178,6 +178,9 @@ def overview():
         "backups": [{"name": b.name, "kb": b.stat().st_size // 1024} for b in backups[-7:]][::-1],
         "backup_count": len(backups),
         "last_brief": json.loads(lb) if lb else None,
+        "usage_24h": rows(c, """SELECT agent, COUNT(*) runs, SUM(input + cache_create) fresh_in, SUM(cache_read) cached_in,
+                                SUM(output) out, ROUND(SUM(cost_usd), 2) usd_equiv, SUM(seconds) secs, MAX(model) model
+                                FROM brain_usage WHERE at > datetime('now','-1 day') GROUP BY agent ORDER BY usd_equiv DESC"""),
     }
 
 

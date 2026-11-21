@@ -257,11 +257,17 @@ def _votes(c, wid: int) -> str:
     return "\n".join(f"{'👍' if r['vote'] > 0 else '👎'} {r['title']}" for r in rows) or "(no votes yet)"
 
 
-def triage_watches(quiet: bool = False) -> str:
+def _triage_model() -> str:
+    from .jobs import triage_model
+    return triage_model()
+
+
+def triage_watches(quiet: bool = False, only: int | None = None) -> str:
     from .jobs import link_of, resolve_links
     c = db()
     out = []
-    for w in c.execute("SELECT * FROM watches WHERE status='active' AND id != 1").fetchall():
+    q = "SELECT * FROM watches WHERE status='active' AND id != 1" + (" AND id=?" if only else "")
+    for w in c.execute(q, (only,) if only else ()).fetchall():
         wid = w["id"]
         c.execute("UPDATE items SET status='skipped' WHERE watch_id=? AND status='new' "
                   "AND fetched_at < datetime('now','-2 days')", (wid,))
@@ -277,7 +283,8 @@ def triage_watches(quiet: bool = False) -> str:
                                  THRESHOLD=w["alert_threshold"], VOTES=_votes(c, wid),
                                  RECENT_ALERTS="\n".join(f"- {r['title']}" for r in recent) or "(none)",
                                  ITEMS=json.dumps(items, ensure_ascii=False),
-                                 NOW=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")), timeout=1200)
+                                 NOW=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")), timeout=1200,
+                     agent="triager", model=_triage_model(), label="watchtriage")
         verdicts = extract_json(res["result"])
         by_id = {r["id"]: r for r in rows}
         alerts = []
@@ -293,11 +300,10 @@ def triage_watches(quiet: bool = False) -> str:
                   f"({','.join(str(i) for i in by_id)})")
         c.commit()
         alerts = sorted(alerts, key=lambda v: -int(v.get("score", 0)))[:MAX_ALERTS_PER_RUN]
-        if alerts and not quiet:
-            try:
-                resolve_links([v["id"] for v in alerts])
-            except Exception:
-                pass
+        try:
+            resolve_links([v["id"] for v in verdicts if v.get("id") in by_id and int(v.get("score", 0)) >= 6], limit=25)
+        except Exception:
+            pass
         for v in alerts:
             r = c.execute("SELECT * FROM items WHERE id=?", (v["id"],)).fetchone()
             c.execute("UPDATE items SET alerted=1 WHERE id=?", (r["id"],))
@@ -326,6 +332,10 @@ def digest_watches(only: int | None = None, force: bool = False, progress_factor
         due = force or w["digest"] == "daily" or (w["digest"] == "weekly" and today.weekday() == 0)
         if not due:
             continue
+        try:
+            triage_watches(only=w["id"])
+        except Exception as e:
+            log_run("watchtriage", False, f"pre-digest: {e}"[:300])
         since = w["last_digest_at"] or (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
         rows = c.execute("""SELECT id, title, source, url, real_url, score, why, cluster, seen, fetched_at FROM items
                             WHERE watch_id=? AND status='triaged' AND score >= 5 AND fetched_at > ?
@@ -334,13 +344,16 @@ def digest_watches(only: int | None = None, force: bool = False, progress_factor
         if not rows:
             send(f"{w['emoji']} <b>{esc(w['name'])}</b>: quiet since the last digest. Still watching 👁", kind="watch_digest")
         else:
-            items = [{**dict(r), "url": r["real_url"] or r["url"]} for r in rows]
-            for it in items:
-                it.pop("real_url", None)
+            from .jobs import resolve_links
+            try:
+                resolve_links([r["id"] for r in rows[:20]], limit=20)
+            except Exception:
+                pass
+            items = [{k: r[k] for k in ("id", "title", "source", "score", "why", "cluster", "seen", "fetched_at")} for r in rows]
             prog = progress_factory(f"{w['emoji']} Writing the {w['name']} digest…") if progress_factory else None
             res = claude(prompt_file("watch_digest", NAME=w["name"], EMOJI=w["emoji"], PURPOSE=w["purpose"] or "",
                                      SINCE=since[:10], ITEMS=json.dumps(items, ensure_ascii=False)),
-                         timeout=1500, progress=prog)
+                         timeout=1500, progress=prog, agent="digest-editor", label="watchdigest")
             if prog:
                 prog.done(True)
             send(res["result"].strip(), kind="watch_digest")
@@ -408,7 +421,7 @@ def apply_spec(spec: dict, progress=None) -> str:
             lines.append(f"✓ {esc(name)}: {d['kind']} ({d.get('count', '?')} entries; {esc(d['note'])})")
         except Exception as e:
             lines.append(f"✗ {esc(name)}: {esc(type(e).__name__)} {esc(str(e)[:80])}")
-    if not ok_sources:
+    if not ok_sources and (wid is None or sources):
         return "⚠️ None of the sources worked, so I didn't create the watch.\n" + "\n".join(lines)
 
     if wid is None:

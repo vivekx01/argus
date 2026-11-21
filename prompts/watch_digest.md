@@ -9,7 +9,7 @@ Write a Telegram message using the HTML subset only (`<b>`, `<i>`, `<a href>`). 
 {{EMOJI}} <b>{{NAME}}</b>: digest
 
 Use whichever of these sections have content, and skip the empty ones:
-- <b>Big moves:</b> deals, launches, funding, entries and exits. Give the numbers and counterparties. One or two lines each, with a <a href="url">source</a>.
+- <b>Big moves:</b> deals, launches, funding, entries and exits. Give the numbers and counterparties. One or two lines each, with a source link written as <a href="link:ID">Outlet</a> (ID = the item's id; code inserts the real URL).
 - <b>Numbers:</b> data points such as leasing volumes, rents, yields, prices and growth rates, with their sources.
 - <b>Policy & regulation</b>
 - <b>Who's active:</b> companies and investors showing up repeatedly.

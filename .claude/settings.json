@@ -1,7 +1,11 @@
 {
-  "enabledMcpjsonServers": ["ccstudio"],
+  "enabledMcpjsonServers": [
+    "ccstudio"
+  ],
   "permissions": {
     "allow": [
+      "Task",
+      "Agent",
       "Read",
       "Glob",
       "Grep",

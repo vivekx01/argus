@@ -159,6 +159,12 @@ CREATE TABLE IF NOT EXISTS outbox(
   tg_message_id INTEGER, at TEXT DEFAULT (datetime('now')));
 CREATE INDEX IF NOT EXISTS i_outbox_at ON outbox(at);
 CREATE INDEX IF NOT EXISTS i_outbox_msg ON outbox(tg_message_id);
+-- tokens per brain run (the Pro usage meter isn't readable, so we keep our own)
+CREATE TABLE IF NOT EXISTS brain_usage(
+  id INTEGER PRIMARY KEY, at TEXT DEFAULT (datetime('now')), label TEXT, agent TEXT, model TEXT,
+  input INTEGER, output INTEGER, cache_read INTEGER, cache_create INTEGER, cost_usd REAL, seconds INTEGER);
+CREATE INDEX IF NOT EXISTS i_usage_at ON brain_usage(at);
+
 -- abuse flags raised by guest-mode Argus; they only notify the owner, they never revoke anything
 CREATE TABLE IF NOT EXISTS guest_flags(
   id INTEGER PRIMARY KEY, chat_id INTEGER, reason TEXT, at TEXT DEFAULT (datetime('now')));
@@ -348,6 +354,7 @@ def send(text: str, buttons: list | None = None, html_mode: bool = True, chat_id
     Returns the Telegram message id of the last part.
     """
     chat_id = chat_id or OWNER
+    text = fill_links(text)
     parts = _chunks(text)
     mid = None
     for i, part in enumerate(parts):
@@ -574,8 +581,39 @@ GUEST_TOOLS = ["--allowedTools", "WebSearch,WebFetch",
                "--disallowedTools", "Bash,Read,Write,Edit,Glob,Grep,NotebookEdit,Task,Agent"]
 
 
+def log_usage(label: str, agent: str | None, final: dict) -> None:
+    """Record tokens per brain run, so usage is visible on the dashboard and to Argus (the Pro meter isn't)."""
+    try:
+        u = final.get("usage") or {}
+        models = ",".join((final.get("modelUsage") or {}).keys())
+        c = db()
+        c.execute("INSERT INTO brain_usage(label, agent, model, input, output, cache_read, cache_create, cost_usd, seconds) "
+                  "VALUES(?,?,?,?,?,?,?,?,?)",
+                  (label, agent or "argus", models, u.get("input_tokens", 0), u.get("output_tokens", 0),
+                   u.get("cache_read_input_tokens", 0), u.get("cache_creation_input_tokens", 0),
+                   final.get("total_cost_usd", 0), final.get("_seconds", 0)))
+        c.commit()
+    except Exception:
+        pass
+
+
+LINK_REF = re.compile(r'href="link:(\d+)"')
+
+
+def fill_links(text: str) -> str:
+    """Replace href="link:ID" placeholders with the item's real (resolved) URL, so models never retype long URLs."""
+    ids = {int(m) for m in LINK_REF.findall(text or "")}
+    if not ids:
+        return text
+    c = db()
+    urls = {r["id"]: (r["real_url"] or r["url"]) for r in
+            c.execute(f"SELECT id, url, real_url FROM items WHERE id IN ({','.join(map(str, ids))})")}
+    return LINK_REF.sub(lambda m: f'href="{html.escape(urls.get(int(m.group(1)), "#"), quote=True)}"', text)
+
+
 def claude(prompt: str, timeout: int = 900, resume: str | None = None, guest: bool = False,
-           progress: "Progress | None" = None, disallow: list[str] | None = None) -> dict:
+           progress: "Progress | None" = None, disallow: list[str] | None = None,
+           agent: str | None = None, model: str | None = None, label: str = "chat") -> dict:
     """Run one headless Claude Code turn, streaming events so progress can be shown live.
 
     Owner mode runs in the repo dir (CLAUDE.md, .claude/settings.json, .mcp.json apply).
@@ -589,6 +627,10 @@ def claude(prompt: str, timeout: int = 900, resume: str | None = None, guest: bo
         cmd += GUEST_TOOLS
     if disallow:
         cmd += ["--disallowedTools", ",".join(disallow)]
+    if agent and not guest:
+        cmd += ["--agent", agent]          # run this whole turn as a specialist (.claude/agents/<agent>.md)
+    if model:
+        cmd += ["--model", model]
     if resume:
         cmd += ["--resume", resume]
     t0 = time.time()
@@ -630,6 +672,7 @@ def claude(prompt: str, timeout: int = 900, resume: str | None = None, guest: bo
             raise ClaudeError(errf.read()[-1500:] or f"exit {p.returncode}")
     final["_seconds"] = round(time.time() - t0)
     final["_tools"] = tools_used
+    log_usage(label if not guest else "guest", agent, final)
     if final.get("is_error"):
         raise ClaudeError(str(final.get("result", ""))[:1500])
     return final

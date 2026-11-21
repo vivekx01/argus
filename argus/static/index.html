@@ -118,6 +118,8 @@ code{background:var(--chip);padding:1px 5px;border-radius:5px;font-size:12px}
       <div class="card"><h3>Top stories (24h)</h3><div id="top"></div></div>
       <div class="card"><h3>Storage & backups</h3><div id="storage"></div></div>
     </div>
+    <div class="card"><h3>Brain usage by agent (24h)</h3><div class="tbl"><table id="usage"></table></div>
+      <div class="muted small">Token counts from each run. "$ equiv" is the API list price of the same tokens, as a relative gauge only (you're on a Pro plan, not billed per token).</div></div>
   </section>
 
   <!-- FEED -->
@@ -224,6 +226,9 @@ async function loadOverview(){
   const [al, top] = await Promise.all([api("/api/items?alerted=true&limit=6"), api("/api/items?min_score=6&limit=8")]);
   $("#alerts").innerHTML = al.map(itemHTML).join("") || "<span class=muted>No alerts yet</span>";
   $("#top").innerHTML = top.filter(i => (Date.now()-utc(i.fetched_at))<864e5).map(itemHTML).join("") || "<span class=muted>Nothing scored ≥6 in 24h</span>";
+  const us = o.usage_24h || [];
+  $("#usage").innerHTML = `<tr><th>Agent</th><th>Runs</th><th>Fresh in</th><th>Cached in</th><th>Out</th><th>$ equiv</th><th>Model</th></tr>` +
+    (us.map(u => `<tr><td>${esc(u.agent)}</td><td>${u.runs}</td><td>${(u.fresh_in/1000).toFixed(1)}k</td><td>${(u.cached_in/1000).toFixed(0)}k</td><td>${(u.out/1000).toFixed(1)}k</td><td>${u.usd_equiv}</td><td class="small muted">${esc((u.model||"").replace(/claude-/g,""))}</td></tr>`).join("") || `<tr><td colspan=7 class=muted>No brain runs logged yet</td></tr>`);
   window._sources = o.sources;
 }
 

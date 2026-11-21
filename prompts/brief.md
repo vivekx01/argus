@@ -10,7 +10,7 @@ Format:
 Then for each story:
 <emoji> <b>Headline in your own words</b>
 One or two lines on what happened and why it matters, with real numbers if there are any.
-🎬 <i>Reel hook</i> · <a href="url">source</a>
+🎬 <i>Reel hook</i> · <a href="link:ID">Outlet</a>   (ID = the item's id; code inserts the real URL. Never type URLs.)
 
 End with:
 🎯 <b>Today's best video:</b> the single story to make content on today, the angle, and why it will perform.
