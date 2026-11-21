@@ -16,6 +16,7 @@ from .jobs import brain_lock, status
 from .lib import OWNER, ROOT, TG_TOKEN, ClaudeError, claude, db, esc, kv_get, kv_set, send
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.getLogger("httpx").setLevel(logging.WARNING)   # its INFO lines include the bot token in the URL
 log = logging.getLogger("argus.bot")
 ONLY_OWNER = filters.Chat(chat_id=OWNER)
 PY = sys.executable
