@@ -23,9 +23,9 @@ MIN_SCORE, MIN_STORIES = 7, 2
 
 SERIES = {
     "ai": {"name": "AI Daily", "emoji": "🤖", "theme": "tech", "cats": ("ai", "research", "ai_finance"),
-           "voice": "af_heart"},
+           "voice": "af_bella"},
     "finance": {"name": "Finance Daily", "emoji": "💹", "theme": "finance", "cats": ("finance", "india", "ai_finance"),
-                "voice": "bf_emma"},
+                "voice": "af_heart"},
 }
 
 
@@ -56,14 +56,35 @@ def draft(series: str, progress=None) -> str:
                                           (r["id"],)).fetchone()[0])} for r in rows]
     VIDEOS.mkdir(parents=True, exist_ok=True)
     path = VIDEOS / f"{date}-{series}.yaml"
+    narration = VIDEOS / f"{date}-{series}-narration.md"
     if progress:
         progress.step("🎬 producer: drafting the script")
     out = claude(prompt_file("daily_video_draft", SERIES=s["name"], THEME=s["theme"], VOICE=s["voice"], DATE=date,
-                             PATH=str(path), ITEMS=json.dumps(items, ensure_ascii=False)),
+                             PATH=str(path), NARRATION_PATH=str(narration), ITEMS=json.dumps(items, ensure_ascii=False)),
                  timeout=2400, agent="video-producer", disallow=NO_RENDER, label="daily-draft", progress=progress)
     plan = extract_json(out["result"])
     if not path.exists():
         raise RuntimeError("producer did not save the script")
+
+    # story editor: independent review of the narration; up to 2 revision rounds until it "ships"
+    review = {}
+    for rnd in range(3):
+        if progress:
+            progress.step(f"📝 story editor: reviewing the narration (round {rnd + 1})")
+        ed = claude(f"Review the narration in {narration} for the {s['name']} video. Follow your editor instructions.",
+                    timeout=900, agent="story-editor", label="story-edit", progress=progress)
+        review = extract_json(ed["result"])
+        if review.get("verdict") == "ship" or rnd == 2:
+            break
+        if progress:
+            progress.step(f"✍️ producer: rewriting ({review.get('biggest_problem', '')[:60]})")
+        out = claude("The independent story editor sent your narration back:\n"
+                     f"{json.dumps(review, ensure_ascii=False)}\n\nRevise {narration} to fix these, keeping the story "
+                     f"true to the sources. Then rebuild {path} from it, re-run validate_script and preview_video, and "
+                     "reply with the same JSON as before. Do NOT render.",
+                     timeout=1800, resume=out.get("session_id"), agent="video-producer", disallow=NO_RENDER,
+                     label="daily-revise", progress=progress)
+        plan = extract_json(out["result"])
 
     if progress:
         progress.step("✅ fact-checker: verifying every on-screen claim")
@@ -83,7 +104,7 @@ def draft(series: str, progress=None) -> str:
                      label="daily-fix", progress=progress)
         plan = extract_json(out["result"])
 
-    kv_set(c, _key(date, series), json.dumps({"path": str(path), "plan": plan, "verdicts": verdicts,
+    kv_set(c, _key(date, series), json.dumps({"path": str(path), "plan": plan, "verdicts": verdicts, "review": review,
                                               "status": "awaiting", "series": series}))
     ok = sum(v.get("verdict") == "confirmed" for v in verdicts)
     def _num(x):
@@ -95,9 +116,11 @@ def draft(series: str, progress=None) -> str:
     send(f"{s['emoji']} <b>{s['name']} draft</b>: {esc(plan.get('title', ''))}\n"
          f"<i>~{plan.get('seconds', '?')}s · voice {esc(plan.get('voice', s['voice']))} · validated and previewed</i>\n\n"
          f"{stories}\n\n🎣 <b>Hook:</b> {esc(plan.get('hook', ''))}\n"
+         f"📝 <b>Story editor:</b> {review.get('overall', '?')}/10 ({esc(review.get('verdict', '?'))})\n"
          f"✅ <b>Fact-check:</b> {ok}/{len(verdicts)} confirmed"
          f"{f', {len(flagged)} fixed or dropped' if flagged else ''}\n"
          f"{('📝 ' + esc(plan.get('notes', ''))) if plan.get('notes') else ''}\n\n"
+         f"{_narration_block(narration)}"
          f"<i>Want changes? Tell me in chat before rendering.</i>",
          kind="daily",
          buttons=[[{"text": "✅ Render", "callback_data": f"daily:{date}:{series}:yes"},
@@ -105,6 +128,16 @@ def draft(series: str, progress=None) -> str:
     log_run("daily", True, f"{series}: drafted '{plan.get('title', '')[:60]}', {ok}/{len(verdicts)} confirmed, "
                            f"{len(flagged)} flagged ({out['_seconds']}s)")
     return "drafted"
+
+
+def _narration_block(narration) -> str:
+    """The spoken script, collapsed, so the owner can read the story before approving a render."""
+    try:
+        text = narration.read_text(errors="replace")
+    except OSError:
+        return ""
+    body = text.split("##", 1)[-1] if "##" in text else text
+    return f"<blockquote expandable>🎙 {esc(body.strip()[:2500])}</blockquote>\n"
 
 
 def render(date: str, series: str, progress=None) -> str:
