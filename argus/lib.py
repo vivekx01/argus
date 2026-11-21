@@ -131,6 +131,9 @@ CREATE TABLE IF NOT EXISTS outbox(
   tg_message_id INTEGER, at TEXT DEFAULT (datetime('now')));
 CREATE INDEX IF NOT EXISTS i_outbox_at ON outbox(at);
 CREATE INDEX IF NOT EXISTS i_outbox_msg ON outbox(tg_message_id);
+-- abuse flags raised by guest-mode Argus; they only notify the owner, they never revoke anything
+CREATE TABLE IF NOT EXISTS guest_flags(
+  id INTEGER PRIMARY KEY, chat_id INTEGER, reason TEXT, at TEXT DEFAULT (datetime('now')));
 CREATE TABLE IF NOT EXISTS access_requests(
   chat_id INTEGER PRIMARY KEY, username TEXT, name TEXT, at TEXT DEFAULT (datetime('now')),
   status TEXT DEFAULT 'pending');  -- pending | approved | denied | revoked

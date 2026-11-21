@@ -256,7 +256,9 @@ def access():
     a = access_load()
     msg = {r["chat_id"]: r for r in rows(c, """SELECT chat_id, MAX(at) last, COUNT(*) n, kind FROM inbox
                                                 WHERE at > datetime('now','-7 days') GROUP BY chat_id""")}
-    guests = [{"chat_id": int(k), **v, "msgs_7d": msg.get(int(k), {}).get("n", 0),
+    flags = {r["chat_id"]: r["n"] for r in rows(c, "SELECT chat_id, COUNT(*) n FROM guest_flags "
+                                                  "WHERE at > datetime('now','-7 days') GROUP BY chat_id")}
+    guests = [{"chat_id": int(k), **v, "msgs_7d": msg.get(int(k), {}).get("n", 0), "flags_7d": flags.get(int(k), 0),
                "last": msg.get(int(k), {}).get("last")} for k, v in a["guests"].items()]
     return {
         "codeword_set": bool(a["codeword_hash"]),
