@@ -23,7 +23,7 @@ mkdir -p ~/argus-guest && cp deploy/guest-CLAUDE.md ~/argus-guest/CLAUDE.md
 # retired units (daily videos were removed): stop them and drop their dangling links
 for u in argus-daily.timer argus-daily.service; do
   systemctl --user disable --now "$u" 2>/dev/null || true
-  [ -e deploy/systemd/"$u" ] || rm -f ~/.config/systemd/user/"$u"
+  [ -e deploy/systemd/"$u" ] || rm -f ~/.config/systemd/user/"$u" ~/.config/systemd/user/timers.target.wants/"$u"
 done
 
 for f in deploy/systemd/*; do
