@@ -314,6 +314,16 @@ def context_pack(c) -> str:
             loops = _j(r["open_loops"])
             lines.append(f"- {when}: {r['summary']}" + (f" Open: {'; '.join(loops)}" if loops else ""))
         parts.append("\n".join(lines))
+    reads = c.execute("SELECT topic, title, summary, note_path, at FROM readings ORDER BY id DESC LIMIT 5").fetchall()
+    if reads:
+        parts.append("[Your own recent reading sessions. Full topic notes are in notes/topics/; Read one when the topic "
+                     "comes up]\n" + "\n".join(f"- {r['at'][:10]} {r['topic']}: {r['title']}. {r['summary']} ({r['note_path']})"
+                                            for r in reversed(reads)))
+    shares = c.execute("SELECT text, sent_at, reaction FROM share_queue WHERE status='sent' ORDER BY id DESC LIMIT 5").fetchall()
+    if shares:
+        react = {1: " (they liked it)", -1: " (they didn't care for it)"}
+        parts.append("[Things you recently texted them on your own]\n" + "\n".join(
+            f"- {r['sent_at'][:16]} UTC: {r['text']}{react.get(r['reaction'], '')}" for r in reversed(shares)))
     rems = c.execute("SELECT id, text, due, rule FROM reminders WHERE status='pending' ORDER BY due LIMIT 10").fetchall()
     if rems:
         parts.append("[Upcoming reminders]\n" + "\n".join(

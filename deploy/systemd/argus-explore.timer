@@ -1,0 +1,9 @@
+[Unit]
+Description=Argus reading sessions 10:15, 14:15, 19:15 IST (max 3/day, skipped on heavy chat days)
+
+[Timer]
+OnCalendar=*-*-* 10,14,19:15:00 Asia/Kolkata
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

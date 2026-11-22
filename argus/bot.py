@@ -50,7 +50,8 @@ Or:
 /research &lt;topic&gt;: deep dive with papers and sources, plus a full report file
 /scan: triage new items now · /brief: today's brief now
 /status: what I've been doing · /new: fresh conversation
-/watches: what I keep an eye on (pause, digest now, remove)
+/interests: what I know you're into (and what I'm reading) · /read: start a reading session now
+/watches: news feeds I keep an eye on (pause, digest now, remove)
 /guests: who has access, pending requests · /codeword &lt;word&gt;: set the access codeword
 
 On alerts: 👍/👎 teach me your taste, 🔎 digs deeper."""
@@ -171,6 +172,31 @@ def spawn_memory_job() -> None:
     """Summarize finished chat sessions in the background (it waits for the brain lock)."""
     subprocess.Popen([PY, "-m", "argus.jobs", "memory"], cwd=ROOT, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+async def cmd_interests(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    from .explore import sync_watches
+    c = db()
+    sync_watches(c)
+    ints = c.execute("""SELECT i.*, (SELECT COUNT(*) FROM readings r WHERE r.interest_id=i.id) n,
+                               (SELECT MAX(at) FROM readings r WHERE r.interest_id=i.id) last
+                        FROM interests i WHERE status='active' ORDER BY weight DESC""").fetchall()
+    lines = ["🧭 <b>What you're into</b> (bar = how engaged you've been lately)"]
+    for r in ints:
+        bar = "█" * max(1, round(r["weight"] * 5))
+        read = f" · read {r['n']}×, last {r['last'][:10]}" if r["n"] else " · not read yet"
+        lines.append(f"{bar} <b>{esc(r['name'])}</b>{read}")
+    cur = c.execute("SELECT topic FROM readings WHERE curiosity=1 ORDER BY id DESC LIMIT 3").fetchall()
+    if cur:
+        lines.append("\n🌱 <i>My own curiosity lately: " + ", ".join(esc(r["topic"]) for r in cur) + "</i>")
+    lines.append("\nTell me about new stuff you're into and I'll pick it up. Tap to drop one:")
+    rows = [[{"text": f"🚫 {r['name'][:28]}", "callback_data": f"int:stop:{r['id']}"}] for r in ints[:8]]
+    await asyncio.to_thread(send, "\n".join(lines), rows, True, OWNER, "interests")
+
+
+async def cmd_read(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📚 Going off to read something for you. I'll text if I find something good.")
+    asyncio.create_task(run_job("explore", "now"))
 
 
 async def cmd_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -554,6 +580,22 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_reply_markup(reply_markup=None)
         return
 
+    if parts[0] == "sh" and len(parts) == 3 and parts[2].isdigit():
+        from .explore import share_reaction
+        toast, row = await asyncio.to_thread(share_reaction, parts[1], int(parts[2]))
+        await q.answer(toast[:190] or "On it 💬")
+        if parts[1] == "more" and row:
+            await q.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("👍", callback_data=f"sh:up:{row['id']}"),
+                InlineKeyboardButton("👎", callback_data=f"sh:down:{row['id']}")]]))
+            ask = (f"Tell me more about this thing you texted me: \"{row['text']}\""
+                   + (f" (source: {row['url']})" if row["url"] else ""))
+            _log_inbox(OWNER, "", "", "[tapped 💬 Tell me more on a share]", "owner")
+            await _reply_via_brain(ctx, OWNER, ask, guest=False)
+        else:
+            await q.edit_message_reply_markup(reply_markup=None)
+        return
+
     if parts[0] == "int" and len(parts) == 3 and parts[1] == "stop" and parts[2].isdigit():
         await q.answer(await asyncio.to_thread(mind.drop_interest, int(parts[2])))
         await q.edit_message_reply_markup(reply_markup=None)
@@ -625,7 +667,7 @@ def main():
     app.add_handler(CommandHandler(["start", "help"], on_start))
     for name, fn in [("status", cmd_status), ("scan", cmd_scan), ("brief", cmd_brief), ("research", cmd_research),
                      ("new", cmd_new), ("codeword", cmd_codeword), ("guests", cmd_guests),
-                     ("watches", cmd_watches)]:
+                     ("watches", cmd_watches), ("interests", cmd_interests), ("read", cmd_read)]:
         app.add_handler(CommandHandler(name, fn, filters=ONLY_OWNER))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, on_text))
     app.add_handler(CallbackQueryHandler(on_button))

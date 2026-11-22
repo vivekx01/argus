@@ -1,0 +1,8 @@
+[Unit]
+Description=Argus share tick (no AI)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/argus
+ExecStart=%h/venv/bin/python -m argus.jobs share
+TimeoutStartSec=120

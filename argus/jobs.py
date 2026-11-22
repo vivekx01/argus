@@ -7,6 +7,8 @@ weekly  : brain. Trends + video ideas + update its own taste notes.
 research: brain. Deep research on a topic, report saved + sent.
 memory  : brain (Haiku). Summarize finished chat sessions into conversation memory. No-op when nothing to do.
 reflect : brain (Sonnet). Nightly rewrite of notes/owner.md, Argus's notes on the owner.
+explore : brain (explorer agent). A reading session on one interest; writes a topic note, queues shares.
+share   : no AI. Sends the best queued share if the outreach budget allows.
 """
 from __future__ import annotations
 
@@ -378,9 +380,13 @@ def brief() -> str:
              AND COALESCE(datetime(NULLIF(published,'')), fetched_at) > ?
            ORDER BY score DESC, seen DESC LIMIT 60""", (since_s, since_s)).fetchall() if r["id"] not in told][:30]
     watch_rows = _daily_watch_items(c)
+    from .explore import mark_sent, morning_line
+    extra, share_id = morning_line(c)
     if not rows and not any(w["items"] for w in watch_rows):
-        send(f"☀️ <b>Morning</b>: quiet since the last brief. Nothing new scored 6+ in AI or finance. Still watching 👁",
-             kind="brief")
+        send("☀️ <b>Morning</b>: quiet since the last brief. Nothing new scored 6+ in AI or finance."
+             + (f"\n\n{extra}" if extra else ""), kind="brief")
+        if share_id:
+            mark_sent(c, share_id)
         _mark_watches_digested(c, watch_rows)
         kv_set(c, "last_brief", json.dumps({"at": now.isoformat(timespec="seconds"), "text": "", "ids": []}))
         return "empty"
@@ -398,7 +404,9 @@ def brief() -> str:
         resolve_links(used, limit=len(used) + 1)   # resolve exactly the links the editor chose (Google News redirects)
     except Exception as e:
         log_run("links", False, str(e)[:300])
-    send(text, kind="brief")
+    send(text + (f"\n\n{extra}" if extra else ""), kind="brief")
+    if share_id:
+        mark_sent(c, share_id)
     _mark_watches_digested(c, watch_rows)
     kv_set(c, "last_brief", json.dumps({"at": now.isoformat(timespec="seconds"), "text": text, "ids": used}))
     info = f"items={len(rows)} watches={sum(len(w['items']) for w in watch_rows)} used={len(used)} ({out['_seconds']}s)"
@@ -595,7 +603,7 @@ def status() -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("job", choices=["fetch", "triage", "brief", "weekly", "research", "status", "backup",
-                                    "watchdigest", "memory", "reflect"])
+                                    "watchdigest", "memory", "reflect", "explore", "share"])
     ap.add_argument("topic", nargs="*")
     ap.add_argument("--quiet", action="store_true", help="triage without sending alerts")
     ap.add_argument("--live", action="store_true", help="show a live progress message in Telegram")
@@ -609,6 +617,16 @@ def main():
             print(status())
         elif a.job == "backup":
             print(backup())
+        elif a.job == "share":
+            from .explore import share_tick
+            print(share_tick())
+        elif a.job == "explore":
+            from .explore import explore
+            try:
+                with brain_lock(wait_s=900):      # don't queue up behind long jobs; the next slot will come
+                    print(explore(progress=Progress("📚 Reading…") if LIVE else None, force=bool(a.topic)))
+            except TimeoutError:
+                print("brain busy, skipped this reading slot")
         elif a.job == "memory":
             from . import mind
             mind.flush_announcements()
@@ -640,7 +658,7 @@ def main():
         _live_done(False, str(e)[:120])
         log_run(a.job, False, str(e))
         print(f"{a.job} failed: {e}", file=sys.stderr)
-        if a.job not in ("fetch", "memory"):
+        if a.job not in ("fetch", "memory", "explore", "share"):
             send(f"⚠️ Argus {a.job} failed: {esc(str(e)[:500])}")
         sys.exit(1)
 

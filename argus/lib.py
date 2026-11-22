@@ -202,6 +202,18 @@ CREATE TABLE IF NOT EXISTS reminders(
   status TEXT DEFAULT 'pending',   -- pending | sent | done | cancelled
   created_at TEXT DEFAULT (datetime('now')), sent_at TEXT);
 CREATE INDEX IF NOT EXISTS i_rem_due ON reminders(status, due);
+-- reading sessions (argus/explore.py): Argus reads properly about an interest and keeps a topic note
+CREATE TABLE IF NOT EXISTS readings(
+  id INTEGER PRIMARY KEY, interest_id INTEGER, topic TEXT, title TEXT, summary TEXT, sources TEXT,
+  note_path TEXT, curiosity INTEGER DEFAULT 0, at TEXT DEFAULT (datetime('now')));
+-- things Argus wants to tell the owner. A no-AI tick sends the best within the outreach budget.
+CREATE TABLE IF NOT EXISTS share_queue(
+  id INTEGER PRIMARY KEY, reading_id INTEGER, interest_id INTEGER,
+  kind TEXT,                       -- find | question | connection | followup
+  text TEXT, url TEXT, score INTEGER,
+  status TEXT DEFAULT 'queued',    -- queued | sent | expired | dropped
+  created_at TEXT DEFAULT (datetime('now')), sent_at TEXT, reaction INTEGER, tg_message_id INTEGER);
+CREATE INDEX IF NOT EXISTS i_share_status ON share_queue(status, created_at);
 
 -- research library ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS papers(
@@ -274,6 +286,10 @@ def db() -> sqlite3.Connection:
     had_fts = c.execute("SELECT 1 FROM sqlite_master WHERE name='items_fts'").fetchone()
     _migrate_items_to_watches(c)
     c.executescript(SCHEMA)
+    if "watch_id" not in [r[1] for r in c.execute("PRAGMA table_info(interests)")]:
+        c.execute("ALTER TABLE interests ADD COLUMN watch_id INTEGER")   # an interest's news feed (optional)
+        c.execute("UPDATE interests SET watch_id=1 WHERE name IN ('AI', 'Finance & markets')")
+        c.commit()
     if not had_fts:  # first run after adding FTS: index the rows that already exist
         c.execute("INSERT INTO items_fts(items_fts) VALUES('rebuild')")
         c.execute("INSERT INTO papers_fts(papers_fts) VALUES('rebuild')")

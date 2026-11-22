@@ -1,0 +1,8 @@
+[Unit]
+Description=Argus share tick every 15 min (budget 5/day, 90 min gap, quiet 22:30-07:30 IST)
+
+[Timer]
+OnCalendar=*:7/15
+
+[Install]
+WantedBy=timers.target
