@@ -324,13 +324,21 @@ def triage_watches(quiet: bool = False, only: int | None = None) -> str:
 
 
 # ================================================================ digests (brain)
+def _channel_active(c) -> bool:
+    r = c.execute("SELECT status FROM watches WHERE id=1").fetchone()
+    return not r or r["status"] == "active"
+
+
 def digest_watches(only: int | None = None, force: bool = False, progress_factory=None) -> str:
     c = db()
     today = dt.datetime.now(IST)
     done = []
     q = "SELECT * FROM watches WHERE id != 1 AND status='active'" + (" AND id=?" if only else "")
     for w in c.execute(q, (only,) if only else ()).fetchall():
-        due = force or w["digest"] == "daily" or (w["digest"] == "weekly" and today.weekday() == 0)
+        # daily watches ride inside the morning brief (one message); only fall back to a separate one if the
+        # channel watch (and so the brief) is paused
+        daily_here = w["digest"] == "daily" and not _channel_active(c)
+        due = force or daily_here or (w["digest"] == "weekly" and today.weekday() == 0)
         if not due:
             continue
         try:

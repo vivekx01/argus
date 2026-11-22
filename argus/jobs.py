@@ -17,6 +17,7 @@ import json
 import re
 import sys
 import time
+from zoneinfo import ZoneInfo
 
 import feedparser
 import httpx
@@ -26,6 +27,8 @@ from .lib import (ARXIV_ID, DATA, HOME, NOTES, REPORTS, ClaudeError, Progress, c
                   kv_get, kv_set, log_run, markdown_to_pdf, norm_title, prompt_file, send, send_document, strip_tags,
                   upsert_paper)
 from .sources import SOURCES
+
+IST = ZoneInfo("Asia/Kolkata")
 
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) ArgusResearchBot/1.0 (personal news reader)"}
 MAX_AGE_H = 36            # ignore items older than this on first sight
@@ -353,35 +356,97 @@ def brief() -> str:
     if not channel_active():
         return "channel watch paused"
     try:
-        triage()                      # make sure the overnight items are scored
+        triage(quiet=True)            # score the overnight items; anything alert-worthy goes in the brief, not a 2nd message
     except Exception as e:
         log_run("triage", False, f"pre-brief: {e}")
     c = db()
-    rows = c.execute("""SELECT id, title, source, category, url, score, why, hook, seen, cluster FROM items
-                        WHERE watch_id=1 AND status='triaged' AND score >= 5 AND fetched_at > datetime('now','-26 hours')
-                        ORDER BY score DESC, seen DESC LIMIT 40""").fetchall()
-    if not rows:
-        send("☀️ <b>Morning brief</b>\n\nQuiet night: nothing scored above 5. Argus is still watching 👁", kind="brief")
+    now = dt.datetime.now(dt.timezone.utc)
+    try:
+        last_at = dt.datetime.fromisoformat(json.loads(kv_get(c, "last_brief", "{}") or "{}").get("at", ""))
+    except (ValueError, TypeError):
+        last_at = now - dt.timedelta(hours=24)
+    # only what HAPPENED since the last brief (published time, not when we happened to fetch it); max 30h back
+    since = max(last_at, now - dt.timedelta(hours=30)) - dt.timedelta(hours=1)
+    since_s = since.strftime("%Y-%m-%d %H:%M:%S")
+    told = _told_ids(c)
+    rows = [r for r in c.execute(
+        """SELECT id, title, source, category, score, why, seen, cluster,
+                  COALESCE(datetime(NULLIF(published,'')), fetched_at) AS happened FROM items
+           WHERE watch_id=1 AND status='triaged' AND score >= 6 AND fetched_at > ?
+             AND COALESCE(datetime(NULLIF(published,'')), fetched_at) > ?
+           ORDER BY score DESC, seen DESC LIMIT 60""", (since_s, since_s)).fetchall() if r["id"] not in told][:30]
+    watch_rows = _daily_watch_items(c)
+    if not rows and not any(w["items"] for w in watch_rows):
+        send(f"☀️ <b>Morning</b>: quiet since the last brief. Nothing new scored 6+ in AI or finance. Still watching 👁",
+             kind="brief")
+        _mark_watches_digested(c, watch_rows)
+        kv_set(c, "last_brief", json.dumps({"at": now.isoformat(timespec="seconds"), "text": "", "ids": []}))
         return "empty"
     try:
-        resolve_links([r["id"] for r in rows[:15]])
+        resolve_links([r["id"] for r in rows[:15]] + [i["id"] for w in watch_rows for i in w["items"]][:10])
     except Exception as e:
         log_run("links", False, str(e)[:300])
-    items = []
-    for r in c.execute(f"SELECT id, title, source, category, url, real_url, score, why, hook, seen, cluster FROM items "
-                       f"WHERE id IN ({','.join(str(r['id']) for r in rows)}) ORDER BY score DESC, seen DESC"):
-        d = dict(r); d.pop("url", None); d.pop("real_url", None); items.append(d)   # links via link:ID
+    items = [dict(r) for r in rows]
     out = claude(prompt_file("brief", ITEMS=json.dumps(items, ensure_ascii=False),
-                             DATE=dt.date.today().strftime("%A, %d %B %Y")), timeout=1200, progress=_live("☀️ Writing the brief…"),
-                 agent="digest-editor", label="brief")
+                             WATCHES=json.dumps([w for w in watch_rows if w["items"]], ensure_ascii=False) or "[]",
+                             ALREADY_TOLD=_already_told_text(c),
+                             SINCE=since.astimezone(IST).strftime("%a %d %b, %H:%M IST"),
+                             DATE=dt.datetime.now(IST).strftime("%A, %d %B")),
+                 timeout=1200, progress=_live("☀️ Writing the brief…"), agent="digest-editor", label="brief")
     text = out["result"].strip()
     _live_done()
+    used = sorted({int(x) for x in re.findall(r"link:(\d+)", text)})
     send(text, kind="brief")
-    kv_set(c, "last_brief", json.dumps({"at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-                                        "text": text}))
-    info = f"items={len(rows)} ({out['_seconds']}s)"
+    _mark_watches_digested(c, watch_rows)
+    kv_set(c, "last_brief", json.dumps({"at": now.isoformat(timespec="seconds"), "text": text, "ids": used}))
+    info = f"items={len(rows)} watches={sum(len(w['items']) for w in watch_rows)} used={len(used)} ({out['_seconds']}s)"
     log_run("brief", True, info)
     return info
+
+
+def _told_ids(c, days: int = 3) -> set[int]:
+    """Stories the owner has already been sent: alerts and items linked in recent briefs."""
+    ids = {r[0] for r in c.execute("SELECT item_id FROM outbox WHERE item_id IS NOT NULL AND at > datetime('now', ?)",
+                                   (f"-{days} days",))}
+    try:
+        ids.update(json.loads(kv_get(c, "last_brief", "{}") or "{}").get("ids", []))
+    except json.JSONDecodeError:
+        pass
+    ids.update(r[0] for r in c.execute("SELECT id FROM items WHERE alerted=1 AND fetched_at > datetime('now', ?)",
+                                       (f"-{days} days",)))
+    return ids
+
+
+def _already_told_text(c) -> str:
+    """What the owner already saw in the last ~2 days (briefs, alerts, digests), so the brief doesn't repeat it."""
+    rows = c.execute("""SELECT kind, at, text FROM outbox WHERE kind IN ('brief','alert','watch_digest','weekly','research')
+                        AND at > datetime('now','-2 days') ORDER BY id DESC LIMIT 12""").fetchall()
+    return "\n\n".join(f"[{r['kind']} {r['at'][:16]} UTC]\n{(r['text'] or '')[:1200]}" for r in rows) or "(nothing yet)"
+
+
+def _daily_watch_items(c) -> list[dict]:
+    """Daily-digest watches ride inside the brief (one morning message). Weekly ones keep their Monday digest."""
+    from .watches import triage_watches
+    out = []
+    for w in c.execute("SELECT * FROM watches WHERE id != 1 AND status='active' AND digest='daily'").fetchall():
+        try:
+            triage_watches(quiet=True, only=w["id"])
+        except Exception as e:
+            log_run("watchtriage", False, f"pre-brief: {e}"[:300])
+        since = w["last_digest_at"] or (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+        rows = c.execute("""SELECT id, title, source, score, why, seen FROM items
+                            WHERE watch_id=? AND status='triaged' AND score >= 6 AND fetched_at > ?
+                            ORDER BY score DESC, seen DESC LIMIT 8""", (w["id"], since)).fetchall()
+        out.append({"watch_id": w["id"], "name": w["name"], "emoji": w["emoji"], "purpose": w["purpose"] or "",
+                    "items": [dict(r) for r in rows]})
+    return out
+
+
+def _mark_watches_digested(c, watch_rows: list[dict]) -> None:
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    for w in watch_rows:
+        c.execute("UPDATE watches SET last_digest_at=? WHERE id=?", (stamp, w["watch_id"]))
+    c.commit()
 
 
 # ================================================================ weekly (brain)

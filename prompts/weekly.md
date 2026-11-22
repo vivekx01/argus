@@ -6,13 +6,18 @@ Do two things.
 Rewrite `notes/taste.md` using the Write tool. Keep it under 60 lines. Record what the owner upvotes and downvotes, which topics and angles to favour or avoid, and any scoring adjustments you've learned. Future triage runs read this file. Base it only on the votes and evidence, not on guesses.
 
 ## 2. Send the weekly report
-Your final reply is a Telegram message, written in the HTML subset only (`<b>`, `<i>`, `<a href>`). Keep it under 3500 characters:
+Your final reply is a Telegram message, written in the HTML subset only (`<b>`, `<i>`, `<a href>`). The owner reads it on a phone on Sunday evening. Make it one easy read of 1,200-2,000 characters, in short plain sentences with no hype.
 
-📈 <b>Argus weekly</b>
-- **The 3-5 big themes** of the week, and which ones are building momentum versus fading.
-- **3 long-form video ideas** (YouTube 8-12 min). For each: the title, the angle, and why now.
-- **5 quick reel ideas**, one line each.
-- **What I learned about your taste:** one or two lines.
+📈 <b>Your week in AI & finance</b>
+<i>One line: the story of the week.</i>
+
+<b>What mattered</b>: the 3 themes that defined the week. Give each 2 sentences: what happened, and whether it's building or fading.
+
+<b>Next week</b>: 1-2 lines on what to watch (scheduled events, open questions).
+
+<b>Make this</b>: 2 long-form video ideas (title + angle + why now, one line each), then 3 reel hooks, one line each.
+
+<b>Your taste</b>: one line on what you learned from their 👍/👎. If there are no votes, say so in a few words.
 
 {{TASTE}}
 
