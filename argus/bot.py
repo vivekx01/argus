@@ -14,6 +14,7 @@ import datetime as dt
 import json
 import logging
 import re
+import subprocess
 import sys
 import time
 
@@ -21,11 +22,12 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler,
                           filters)
 
+from . import mind
 from .jobs import brain_lock, status
 from .lib import (OWNER, ROOT, TG_TOKEN, ClaudeError, Progress, access_load, access_save, claude, codeword_matches,
                   db, esc, is_guest, kv_get, kv_set, send, set_codeword)
 
-SESSION_IDLE_H = 6           # start a fresh chat session after this much quiet...
+SESSION_IDLE_H = mind.SESSION_IDLE_H   # start a fresh chat session after this much quiet (the old one gets summarized)...
 SESSION_MAX_TURNS = 30       # ...or after this many turns, so context stays small and current
 PROPOSAL = re.compile(r"\[\[PROPOSE_(RESEARCH):\s*(.+?)\]\]", re.S)
 REVOKE_PROPOSAL = re.compile(r"\[\[PROPOSE_REVOKE:\s*(-?\d+)\s*\|?\s*(.*?)\]\]", re.S)
@@ -40,9 +42,11 @@ PY = sys.executable
 GUEST_DAILY_LIMIT = 20
 STRANGER_LOG_LIMIT = 30      # per chat per day, so spam can't fill the db
 
-HELP = """👁 <b>Argus</b>: I watch AI and finance news so you don't have to.
+HELP = """👁 <b>Argus</b>: your curious friend who reads everything.
 
-Just talk to me, or:
+Just talk to me about anything. I remember what you tell me and what you're into,
+and I can keep notes ("remember that...") or set reminders ("remind me tomorrow at 9 to...").
+Or:
 /research &lt;topic&gt;: deep dive with papers and sources, plus a full report file
 /scan: triage new items now · /brief: today's brief now
 /status: what I've been doing · /new: fresh conversation
@@ -163,9 +167,19 @@ async def _apply_watch(spec: dict) -> None:
     await asyncio.to_thread(send, report, None, True, OWNER, "watch_setup")
 
 
+def spawn_memory_job() -> None:
+    """Summarize finished chat sessions in the background (it waits for the brain lock)."""
+    subprocess.Popen([PY, "-m", "argus.jobs", "memory"], cwd=ROOT, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
 async def cmd_new(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    kv_set(db(), "chat_meta", "{}")
-    await update.message.reply_text("🧹 Fresh conversation started.")
+    c = db()
+    meta = mind.get_meta(c)
+    if mind.close_session(meta):
+        spawn_memory_job()
+    kv_set(c, "chat_meta", json.dumps({"last_outbox": meta.get("last_outbox", 0)}))
+    await update.message.reply_text("🧹 Fresh conversation. I'll keep a summary of the last one in mind.")
 
 
 async def cmd_codeword(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -203,7 +217,27 @@ async def cmd_guests(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 # ------------------------------------------------------------------ chat
-OWNER_RULES = """Reply for Telegram (HTML subset only: <b>, <i>, <a href>, <code>, <pre>; no markdown). Be concise.
+OWNER_RULES = """Reply for Telegram (HTML subset only: <b>, <i>, <a href>, <code>, <pre>; no markdown).
+Who you are to them: a curious, opinionated friend who reads everything. Part mentor, part assistant, mostly friend.
+- Text like a person: short by default (a few sentences). Go long only when they want depth, or offer it ("want the long
+  version?"). No headers or bullet walls in casual chat.
+- Have views and say them. Disagree when you think they're wrong, with reasons. Ask a question back when you're curious.
+  Be a bit playful. Never flatter, never fake certainty, always say where a claim comes from.
+- Use what you know about them (your notes, past chats, their interests) naturally. Don't recite it.
+- They run a content channel, but you're a companion first: content angles or hooks only when they ask.
+Memory (hidden markers, each on its own line at the very end of your reply; code applies and strips them):
+- [[INTEREST: Name | why they care]] when they show real curiosity about a subject not in their interests yet. Code
+  tells them you'll follow it, so don't announce it yourself.
+- [[FACT: one lasting fact about them]] when you learn something durable (work, goals, views, what they know, how they
+  like things). Not trivia, not every passing remark.
+- [[REMEMBER: self-contained note]] when they ask you to remember something. Confirm in a few words.
+  Saved notes: sqlite3 data/argus.db "SELECT id,text,at FROM memories WHERE kind='memo' AND active=1"
+- [[FORGET: id]] when they ask you to forget a note.
+- [[REMIND: when | what]] for reminders. when is IST, either "2026-11-23 09:00" or a repeat: "daily 08:00",
+  "weekdays 09:30", "weekly sun 18:00", "monthly 1 10:00". Work out "tomorrow" or "in 2 hours" from [Now]. If the time
+  is vague ("later", "sometime"), ask instead. Code confirms the exact time, so just acknowledge it.
+  Pending: sqlite3 data/argus.db "SELECT id,text,due,rule FROM reminders WHERE status='pending'" (due is UTC)
+- [[CANCEL_REMINDER: id]] to cancel one.
 Action rules:
 - Only start costly or outward-facing work when the owner clearly asks for it. A bare "this", "ok" or "do it" after an
   explanation is NOT a request to write a report. If you're unsure what they want, ask one short question.
@@ -289,8 +323,16 @@ def _chat_turn(text: str, chat_id: int, guest: bool, update_msg=None) -> str:
         except json.JSONDecodeError:
             meta = {}
         if (time.time() - meta.get("last_ts", 0) > SESSION_IDLE_H * 3600) or meta.get("turns", 0) >= SESSION_MAX_TURNS:
+            if mind.close_session(meta):                                  # summarized in the background
+                spawn_memory_job()
             meta = {"last_outbox": meta.get("last_outbox", 0)}           # fresh session
+        fresh = not meta.get("sid")
+        if fresh:
+            meta["started"] = mind.sql_utc(mind.now_utc())
         context = _owner_context(c, meta, update_msg)
+        if fresh:
+            pack = mind.context_pack(c)
+            context = f"{pack}\n\n{context}".strip()
         now = dt.datetime.now(dt.timezone(dt.timedelta(hours=5, minutes=30))).strftime("%a %d %b %Y, %H:%M IST")
         prompt = (f"[Now: {now}]\n" + (f"{context}\n\n" if context else "")
                   + f"[Telegram message from the owner]\n{text}\n\n{OWNER_RULES}")
@@ -386,6 +428,8 @@ async def _reply_via_brain(ctx, chat_id: int, text: str, guest: bool, update_msg
             reply = await _handle_flags(ctx, chat_id, reply)
         else:
             reply, buttons = _with_proposals(reply)
+            reply, rows = await asyncio.to_thread(mind.apply_markers, reply)
+            buttons = (buttons or []) + rows or None
     except TimeoutError:
         reply = "⏳ I'm busy with another job right now. Try again in a few minutes."
     except ClaudeError as e:
@@ -504,6 +548,17 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_reply_markup(reply_markup=None)
         return
 
+    if parts[0] == "rem" and len(parts) == 3 and parts[2].isdigit():
+        msg = await asyncio.to_thread(mind.reminder_button, parts[1], int(parts[2]))
+        await q.answer(msg[:190] or "Okay")
+        await q.edit_message_reply_markup(reply_markup=None)
+        return
+
+    if parts[0] == "int" and len(parts) == 3 and parts[1] == "stop" and parts[2].isdigit():
+        await q.answer(await asyncio.to_thread(mind.drop_interest, int(parts[2])))
+        await q.edit_message_reply_markup(reply_markup=None)
+        return
+
     if parts[0] == "noop":
         await q.answer("Okay 👌")
         await q.edit_message_reply_markup(reply_markup=None)
@@ -545,10 +600,24 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.answer()
 
 
+async def _reminder_loop() -> None:
+    """Owner-set reminders fire on time (no AI involved). After downtime, missed ones go out late, once."""
+    while True:
+        try:
+            await asyncio.to_thread(mind.send_due_reminders)
+        except Exception:
+            log.exception("reminder loop")
+        await asyncio.sleep(30)
+
+
+async def _post_init(app: Application) -> None:
+    app.create_task(_reminder_loop())
+
+
 def main():
     if not TG_TOKEN or not OWNER:
         sys.exit("missing TELEGRAM_BOT_TOKEN / OWNER_CHAT_ID in ~/.argus/telegram.env")
-    app = Application.builder().token(TG_TOKEN).build()
+    app = Application.builder().token(TG_TOKEN).post_init(_post_init).build()
     app.add_handler(CommandHandler(["start", "help"], on_start))
     for name, fn in [("status", cmd_status), ("scan", cmd_scan), ("brief", cmd_brief), ("research", cmd_research),
                      ("new", cmd_new), ("codeword", cmd_codeword), ("guests", cmd_guests),

@@ -171,6 +171,38 @@ CREATE TABLE IF NOT EXISTS access_requests(
   chat_id INTEGER PRIMARY KEY, username TEXT, name TEXT, at TEXT DEFAULT (datetime('now')),
   status TEXT DEFAULT 'pending');  -- pending | approved | denied | revoked
 
+-- the owner (argus/mind.py) -----------------------------------------------------
+-- facts Argus learned about the owner, and memos the owner asked it to keep. Written only by code, from chat markers.
+CREATE TABLE IF NOT EXISTS memories(
+  id INTEGER PRIMARY KEY,
+  kind TEXT,                       -- fact | memo
+  text TEXT, source TEXT,          -- chat | summary | seed
+  at TEXT DEFAULT (datetime('now')),
+  active INTEGER DEFAULT 1);
+-- subjects the owner cares about; weight follows how engaged they are lately (0.05..1)
+CREATE TABLE IF NOT EXISTS interests(
+  id INTEGER PRIMARY KEY,
+  name TEXT UNIQUE COLLATE NOCASE, why TEXT,
+  status TEXT DEFAULT 'active',    -- active | dropped (owner said stop: never re-adopt silently)
+  weight REAL DEFAULT 0.6, origin TEXT,
+  created_at TEXT DEFAULT (datetime('now')), last_engaged TEXT);
+INSERT OR IGNORE INTO interests(name, why, origin, weight) VALUES
+  ('AI', 'models, agents, research and the AI industry', 'seed', 0.9),
+  ('Finance & markets', 'global markets, companies, deals and money', 'seed', 0.9),
+  ('Software engineering', 'new tools, practices and tech', 'seed', 0.7),
+  ('Psychology', 'how people think and decide', 'seed', 0.6);
+-- one row per chat session: what was discussed and what was left open, so the next session continues the relationship
+CREATE TABLE IF NOT EXISTS conversations(
+  id INTEGER PRIMARY KEY, sid TEXT UNIQUE, started TEXT, ended TEXT, turns INTEGER,
+  summary TEXT, topics TEXT, open_loops TEXT, done INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS reminders(
+  id INTEGER PRIMARY KEY, text TEXT,
+  due TEXT,                        -- UTC 'YYYY-MM-DD HH:MM:SS'
+  rule TEXT DEFAULT '',            -- '' (once) | daily HH:MM | weekdays HH:MM | weekly mon HH:MM | monthly 15 HH:MM (IST)
+  status TEXT DEFAULT 'pending',   -- pending | sent | done | cancelled
+  created_at TEXT DEFAULT (datetime('now')), sent_at TEXT);
+CREATE INDEX IF NOT EXISTS i_rem_due ON reminders(status, due);
+
 -- research library ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS papers(
   arxiv_id TEXT PRIMARY KEY,

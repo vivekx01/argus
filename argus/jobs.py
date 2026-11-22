@@ -5,6 +5,8 @@ triage  : brain. Score new items, send breaking alerts.
 brief   : brain. Morning brief from the last 24h.
 weekly  : brain. Trends + video ideas + update its own taste notes.
 research: brain. Deep research on a topic, report saved + sent.
+memory  : brain (Haiku). Summarize finished chat sessions into conversation memory. No-op when nothing to do.
+reflect : brain (Sonnet). Nightly rewrite of notes/owner.md, Argus's notes on the owner.
 """
 from __future__ import annotations
 
@@ -593,7 +595,7 @@ def status() -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("job", choices=["fetch", "triage", "brief", "weekly", "research", "status", "backup",
-                                    "watchdigest"])
+                                    "watchdigest", "memory", "reflect"])
     ap.add_argument("topic", nargs="*")
     ap.add_argument("--quiet", action="store_true", help="triage without sending alerts")
     ap.add_argument("--live", action="store_true", help="show a live progress message in Telegram")
@@ -607,6 +609,12 @@ def main():
             print(status())
         elif a.job == "backup":
             print(backup())
+        elif a.job == "memory":
+            from . import mind
+            mind.flush_announcements()
+            if mind.pending_work():          # check before taking the lock, so idle runs cost nothing
+                with brain_lock():
+                    print(mind.summarize_sessions())
         else:
             with brain_lock():
                 if a.job == "triage":
@@ -625,11 +633,14 @@ def main():
                     print(weekly())
                 elif a.job == "research":
                     print(research(" ".join(a.topic)))
+                elif a.job == "reflect":
+                    from . import mind
+                    print(mind.reflect())
     except (ClaudeError, TimeoutError, ValueError) as e:
         _live_done(False, str(e)[:120])
         log_run(a.job, False, str(e))
         print(f"{a.job} failed: {e}", file=sys.stderr)
-        if a.job != "fetch":
+        if a.job not in ("fetch", "memory"):
             send(f"⚠️ Argus {a.job} failed: {esc(str(e)[:500])}")
         sys.exit(1)
 

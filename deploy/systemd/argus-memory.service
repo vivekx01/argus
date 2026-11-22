@@ -1,0 +1,9 @@
+[Unit]
+Description=Argus conversation memory (summarize finished chat sessions)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/argus
+ExecStart=%h/venv/bin/python -m argus.jobs memory
+TimeoutStartSec=2400
+Nice=10

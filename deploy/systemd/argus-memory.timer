@@ -1,0 +1,9 @@
+[Unit]
+Description=Argus conversation memory every 20 min (no-op unless a chat session has gone quiet)
+
+[Timer]
+OnCalendar=*:0/20
+Persistent=true
+
+[Install]
+WantedBy=timers.target

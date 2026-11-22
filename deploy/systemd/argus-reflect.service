@@ -1,0 +1,9 @@
+[Unit]
+Description=Argus nightly reflection (rewrite notes/owner.md)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/argus
+ExecStart=%h/venv/bin/python -m argus.jobs reflect
+TimeoutStartSec=3000
+Nice=10
