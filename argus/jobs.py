@@ -382,10 +382,6 @@ def brief() -> str:
         _mark_watches_digested(c, watch_rows)
         kv_set(c, "last_brief", json.dumps({"at": now.isoformat(timespec="seconds"), "text": "", "ids": []}))
         return "empty"
-    try:
-        resolve_links([r["id"] for r in rows[:15]] + [i["id"] for w in watch_rows for i in w["items"]][:10])
-    except Exception as e:
-        log_run("links", False, str(e)[:300])
     items = [dict(r) for r in rows]
     out = claude(prompt_file("brief", ITEMS=json.dumps(items, ensure_ascii=False),
                              WATCHES=json.dumps([w for w in watch_rows if w["items"]], ensure_ascii=False) or "[]",
@@ -396,6 +392,10 @@ def brief() -> str:
     text = out["result"].strip()
     _live_done()
     used = sorted({int(x) for x in re.findall(r"link:(\d+)", text)})
+    try:
+        resolve_links(used, limit=len(used) + 1)   # resolve exactly the links the editor chose (Google News redirects)
+    except Exception as e:
+        log_run("links", False, str(e)[:300])
     send(text, kind="brief")
     _mark_watches_digested(c, watch_rows)
     kv_set(c, "last_brief", json.dumps({"at": now.isoformat(timespec="seconds"), "text": text, "ids": used}))
