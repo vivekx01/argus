@@ -157,9 +157,9 @@ def add_reminder(c, text: str, due: dt.datetime, rule: str = "") -> int:
                      (" ".join(text.split())[:500], sql_utc(due), rule)).lastrowid
 
 
-def _interest_note(name: str, iid: int) -> tuple[str, list]:
+def _interest_note(name: str, iid: int) -> tuple[str, dict]:
     return (f"📌 <i>New interest: <b>{esc(name)}</b>. I'll start reading up on it. Say stop if not.</i>",
-            [{"text": f"🚫 Stop following {name[:24]}", "callback_data": f"int:stop:{iid}"}])
+            {"text": f"🚫 Stop following {name[:24]}", "callback_data": f"int:stop:{iid}"})
 
 
 def apply_markers(reply: str) -> tuple[str, list]:

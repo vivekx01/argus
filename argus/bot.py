@@ -610,8 +610,12 @@ async def _reminder_loop() -> None:
         await asyncio.sleep(30)
 
 
+_BG: set = set()
+
+
 async def _post_init(app: Application) -> None:
-    app.create_task(_reminder_loop())
+    t = asyncio.get_running_loop().create_task(_reminder_loop())
+    _BG.add(t)                  # keep a reference so the task isn't garbage-collected
 
 
 def main():
