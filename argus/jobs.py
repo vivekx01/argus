@@ -454,6 +454,8 @@ def weekly() -> str:
     if not channel_active():
         return "channel watch paused"
     c = db()
+    if c.execute("SELECT 1 FROM runs WHERE job='weekly' AND ok=1 AND started > datetime('now','-4 days')").fetchone():
+        return "already sent this week"
     rows = c.execute("""SELECT id, title, source, category, score, why, cluster, seen FROM items
                         WHERE watch_id=1 AND status='triaged' AND score >= 6 AND fetched_at > datetime('now','-7 days')
                         ORDER BY score DESC LIMIT 120""").fetchall()
